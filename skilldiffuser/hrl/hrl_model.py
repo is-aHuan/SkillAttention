@@ -17,14 +17,15 @@ class HRLModel(nn.Module, IQMixin):
     """Base class containing all the models"""
 
     def __init__(self, args, option_selector_args, state_reconstructor_args, lang_reconstructor_args,
-                 decision_args, iq_args, diff_trainer, device, horizon=5, K=10, train_lm=True,
+                 decision_args, lang_model, diff_trainer, device, horizon=5, K=10, train_lm=True,
                  method='vanilla', state_reconstruct=False, lang_reconstruct=False, **kwargs):
         super().__init__()
 
         self.args = args
         self.horizon = horizon
         self.K = K
-        self.lm = DistilBertModel.from_pretrained('distilbert-base-uncased')
+        # self.lm = DistilBertModel.from_pretrained('distilbert-base-uncased')
+        self.lm = lang_model
         self.train_lm = train_lm  # whether to train lm or not
         self.device = device
 
@@ -42,23 +43,27 @@ class HRLModel(nn.Module, IQMixin):
         self.option_dim = decision_args['option_dim']
 
         # self.decision_transformer = DecisionTransformer(lang_dim=self.lm.config.dim, **decision_transformer_args)
-
+        # lang_dim = self.lm.config.hidden_size
+    
         if method == 'vanilla':
             assert decision_args['use_language'] and not decision_args['use_options']
         else:
             assert decision_args['use_options'] and not decision_args['use_language']
 
-            self.option_selector = OptionSelector(lang_dim=self.lm.config.dim,
-                                                  method=self.method, **option_selector_args)
+            # TODO: Attention Here!
+            # self.option_selector = OptionSelector(lang_dim=self.lm.config.dim,
+            #                                       method=self.method, **option_selector_args)
 
+            self.option_selector = OptionSelector(lang_dim=self.lm.config.hidden_size,
+                                        method=self.method, **option_selector_args)
             if state_reconstruct:
                 self.state_reconstructor = StateReconstructor(**state_reconstructor_args)
             if lang_reconstruct:
                 self.lang_reconstructor = LanguageReconstructor(
-                    lang_dim=self.lm.config.dim, **lang_reconstructor_args)
+                    lang_dim=self.lm.config.hidden_size, **lang_reconstructor_args)
 
         # TODO
-        self.diffuser = DecEncoder(lang_dim=self.lm.config.dim, K=K, **decision_args)
+        self.diffuser = DecEncoder(lang_dim=self.lm.config.hidden_size, K=K, **decision_args)
 
         self.diff_trainer = diff_trainer
         # self.diff_trainer.set_optimizer(self.diffuser)
@@ -70,16 +75,42 @@ class HRLModel(nn.Module, IQMixin):
     def forward(self, lm_input_ids, lm_attention_mask, states, actions, timesteps, iter_num, ind, diff_train_num, attention_mask=None):
         # pdb.set_trace()
         batch_size, traj_len = states.shape[0], states.shape[1]
+
+        # TODO: distilbert-base-uncased -> RoboBrain(llava-7b-hf)
+        # if not self.train_lm:
+        #     with torch.no_grad():
+        #         # (batch_size,num_embeddings,embedding_size)
+        #         lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
+        # else:
+        #     # (batch_size,num_embeddings,embedding_size)
+        #     lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
+        # cls_embeddings = lm_embeddings[:, 0, :].unsqueeze_(1)
+        # # word_embeddings = lm_embeddings[:, 1:-1, :]      # We skip the CLS and SEP tokens. I know there's padding here but we at least always remove the CLS
+        # word_embeddings = lm_embeddings[:, 1:, :]      # We skip the CLS tokens
+
         if not self.train_lm:
             with torch.no_grad():
-                # (batch_size,num_embeddings,embedding_size)
-                lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
+                # 对于Llama/RoboBrain，lm()的输出是一个包含多个元素的元组或对象
+                # 第一个元素(outputs[0])或.last_hidden_state就是我们需要的隐藏状态
+                lm_embeddings = self.lm(input_ids=lm_input_ids, attention_mask=lm_attention_mask).last_hidden_state
         else:
-            # (batch_size,num_embeddings,embedding_size)
-            lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
-        cls_embeddings = lm_embeddings[:, 0, :].unsqueeze_(1)
-        # word_embeddings = lm_embeddings[:, 1:-1, :]      # We skip the CLS and SEP tokens. I know there's padding here but we at least always remove the CLS
-        word_embeddings = lm_embeddings[:, 1:, :]      # We skip the CLS tokens
+            lm_embeddings = self.lm(input_ids=lm_input_ids, attention_mask=lm_attention_mask).last_hidden_state
+
+        # 关键改动：不再使用 [CLS] token
+        # 1. 获取代表整个序列的嵌入 (sequence_embedding)
+        # 我们需要找到每个序列中最后一个非填充(non-padding)token的索引
+        # attention_mask 中每一行的和，减1，就是最后一个有效token的索引
+        last_token_indices = lm_attention_mask.sum(dim=1) - 1
+
+        # 使用高级索引从 lm_embeddings 中提取每个序列的最后一个token的嵌入
+        # torch.arange(batch_size) 生成 [0, 1, 2, ...] 用于选择每一行
+        # sequence_embedding == cls_embeddings
+        sequence_embeddings = lm_embeddings[torch.arange(batch_size), last_token_indices, :]
+        sequence_embeddings = sequence_embeddings.unsqueeze(1) # 保持维度一致 (batch, 1, dim)
+
+        # 2. 获取词级别的嵌入 (word_embeddings)
+        # 对于解码器模型，所有token的输出都可以作为词嵌入，没有需要跳过的特殊token
+        word_embeddings = lm_embeddings
 
         entropy = None
         if self.method == 'vanilla':
@@ -178,7 +209,8 @@ class HRLModel(nn.Module, IQMixin):
             if self.lang_reconstruct:
                 # TODO: Maybe fix?? Do we need the max options formulation? Check this
                 lang_rc_preds = self.lang_reconstructor(selected_options.reshape(batch_size, -1))
-                lang_rc_targets = cls_embeddings
+                # lang_rc_targets = cls_embeddings
+                lang_rc_targets = sequence_embeddings
             else:
                 lang_rc_preds = None
                 lang_rc_targets = None

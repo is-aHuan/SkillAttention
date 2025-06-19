@@ -1,5 +1,5 @@
 import re
-from inference import SimpleInference
+from inferencer import SimpleInference
 
 class HighLevelPlanner:
     """
@@ -13,6 +13,9 @@ class HighLevelPlanner:
     
     def __init__(self, model_id="BAAI/RoboBrain", lora_id=None):
         self.model = SimpleInference(model_id, lora_id)
+
+        assert hasattr(self.model.processor, 'tokenizer'), "The model processor must have a tokenizer."
+        self.tokenizer = self.model.processor.tokenizer
 
     def decompose_task(self, task, image):
         prompt = (

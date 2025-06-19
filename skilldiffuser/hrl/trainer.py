@@ -20,12 +20,18 @@ from viz import get_tokens, viz_matrix, plot_hist, viz_matrix2
 
 class Trainer:
 
-    def __init__(self, args, model, tokenizer, optimizer, train_loader, env=None, env_name=None, val_loader=None,
+    def __init__(self, args, model, planner, optimizer, train_loader, env=None, env_name=None, val_loader=None,
                  state_il=True, scheduler=None, eval_episode_factor=2, eval_every=50, num_eval_episodes=10, K=10,
-                 skip_words=None, device='cuda'):
+                 skip_words=None, device='cuda', train_vlm=False):
         self.args = args
         self.model = model
-        self.tokenizer = tokenizer
+        self.planner = planner
+
+        if train_vlm:
+            self.planner.model.train()
+        else:
+            self.planner.model.eval()
+
         self.optimizer = optimizer
         self.train_loader = train_loader
         self.env = env
@@ -75,7 +81,7 @@ class Trainer:
         
         ind = 0
         for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
-            lm_input = self.tokenizer(text=langs, add_special_tokens=True,
+            lm_input = self.planner.tokenizer(text=langs, add_special_tokens=True,
                                       return_tensors='pt', padding=True).to(self.device)
         
             if method == 'traj_option' or method == 'option':
@@ -294,7 +300,7 @@ class Trainer:
                 env = BabyAIWrapper(self.env, self.train_loader.dataset)
 
                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                     render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i, ema_diffusion_model=ema_diffusion_model)
 
                 if render and i % render_freq == 0:
@@ -351,7 +357,7 @@ class Trainer:
                                       instr=instr, orig_instr=instr)
                     with torch.no_grad():
                         episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                            env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                            env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                             render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                             render_freq=render_freq, iter_num=iter_num, i=i)
 
@@ -410,7 +416,7 @@ class Trainer:
                                               instr=instr, orig_instr=orig_instr)
                             with torch.no_grad():
                                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                                     render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                                     render_freq=render_freq, iter_num=iter_num, i=i)
 
@@ -454,7 +460,7 @@ class Trainer:
                 env = BaseWrapper(self.env, self.train_loader.dataset)
 
                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                     render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i)
 
                 if render and i % render_freq == 0:
@@ -489,7 +495,7 @@ class Trainer:
             state_rc_losses, lang_rc_losses = [], []
 
             for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.val_loader):
-                lm_input = self.tokenizer(text=langs, add_special_tokens=True,
+                lm_input = self.planner.tokenizer(text=langs, add_special_tokens=True,
                                           return_tensors='pt', padding=True).to(self.device)
 
                 if method == 'traj_option' or method == 'option':

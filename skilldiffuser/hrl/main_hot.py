@@ -27,6 +27,7 @@ from trainer import Trainer
 from difftrainer import DiffTrainer
 import diffuser.utils as diffutils
 from omegaconf import open_dict
+from inferencer.planner import HighLevelPlanner
 
 def evaluate(cfg):
     # load saved arguments
@@ -66,8 +67,11 @@ def evaluate(cfg):
             # entity='language-rl'
         )
 
-    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
-    num_eval_episodes = args.trainer.num_eval_episodes
+    # tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    # num_eval_episodes = args.trainer.num_eval_episodes
+    # tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+    planner = HighLevelPlanner()
+
     print('=' * 50)
     print(f'Starting evaluation: {args.env.name}')
     print(f'{args.trainer.num_eval_episodes} trajectories')
@@ -268,7 +272,7 @@ def evaluate(cfg):
     trainer = Trainer(
         args,
         model=model,
-        tokenizer=tokenizer,
+        planner=planner,
         optimizer=None,
         train_loader=train_loader,
         env=env,
@@ -320,7 +324,8 @@ def train(args):
     if not os.path.isdir(args.savepath):
         os.makedirs(args.savepath, exist_ok=True)
 
-    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    planner = HighLevelPlanner()
+    # tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 
     #K = args['K']
     batch_size = args.batch_size
@@ -524,7 +529,7 @@ def train(args):
     diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args)
 
     model = HRLModel(args, option_selector_args, state_reconstructor_args,
-                     lang_reconstructor_args, decision_args, iq_args, diff_trainer, device, **hrl_model_args)
+                     lang_reconstructor_args, decision_args, planner.model.model.language_model, diff_trainer, device, **hrl_model_args)
 
     # # load saved arguments
     # checkpoint = torch.load(cfg.checkpoint_path)
@@ -621,7 +626,7 @@ def train(args):
     trainer = Trainer(
         args=args,
         model=model,
-        tokenizer=tokenizer,
+        planner=planner,
         optimizer=optimizer,
         train_loader=train_loader,
         env=env,
@@ -707,4 +712,6 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     # os.environ["CUDA_VISIBLE_DEVICES"]="4"
-    main()
+    # main()
+    planner = HighLevelPlanner(model_id="BAAI/RoboBrain")
+
