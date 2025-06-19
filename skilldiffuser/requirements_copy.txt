@@ -1,0 +1,3 @@
+git+https://github.com/rlworkgroup/metaworld.git@b016e6a25e485f1ffa8ccbf52df54ac204a81f31#egg=metaworld
+git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
+#git+https://github.com/rail-berkeley/d4rl.git@c39eefd68d2f3277ca68e996a45ce1dd24e65625
