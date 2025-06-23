@@ -212,7 +212,7 @@ class TemporalUnet(nn.Module):
             assert returns is not None
             returns_embed = self.returns_mlp(returns)
             if use_dropout:
-                mask = self.mask_dist.sample(sample_shape=(returns_embed.size(0), 1)).to(returns_embed.device)
+                mask = self.mask_dist.sample(sample_shape=(returns_embed.size(0), 1)).to(returns_embed.device).to(torch.float16)
                 returns_embed = mask*returns_embed
             if force_dropout:
                 returns_embed = 0*returns_embed

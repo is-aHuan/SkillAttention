@@ -33,7 +33,7 @@ codebook_dim: 16
 
 parallel: False  # True
 savedir: 'checkpoints'
-savepath: /home/lyh/Data/lorel/may_08_sawyer_50k/ ## to be filled in code
+savepath: /root/dataspace/lorel/may_08_sawyer_50k/tune/ ## to be filled in code
 
 method: ## to be filled in code
 use_iq: False ## use IQ-Learn objective instead of BC

@@ -5,7 +5,6 @@ from inferencer import SimpleInference
 from utils import pad, entropy
 from vector_quantize_pytorch import VectorQuantize
 
-
 class HighLevelPlanner(nn.Module):
     """
     HighLevelPlanner leverages a pre-trained model to generate a detailed step-by-step plan for a given task and image,
@@ -31,7 +30,11 @@ class HighLevelPlanner(nn.Module):
         self.horizon = kwargs['horizon']
         self.output_attentions = kwargs.get('output_attentions', False)
         self.use_vq = kwargs.get('use_vq', True)
+        self.max_length = max_length
+
         self.vlm = SimpleInference(model_id, lora_id)
+        image_size = self.vlm.model.config.vision_config.image_size
+        self.state_dim = (3, image_size, image_size) if isinstance(image_size, int) else image_size
 
         assert hasattr(self.vlm.processor, 'tokenizer'), "The model processor must have a tokenizer."
         self.tokenizer = self.vlm.processor.tokenizer
@@ -177,6 +180,46 @@ class HighLevelPlanner(nn.Module):
             return option_preds, attentions, ret_state_embeddings
 
         return options, indices, commitment_loss, entropies, ret_state_embeddings
+    
+    def get_option(self, word_embeddings, states, timesteps, method, **kwargs):
+
+        if 'constant_option' in kwargs:
+            return self.Z.project_out(
+                self.Z.codebook[kwargs['constant_option']]), torch.tensor(
+                kwargs['constant_option'])
+
+        if method == 'traj_option':
+            if isinstance(self.state_dim, tuple):
+                states = states.reshape(1, -1, *self.state_dim)
+            else:
+                states = states.reshape(1, -1, self.state_dim)
+            
+            timesteps = timesteps.reshape(1, -1)
+            if self.max_length is not None:
+                states = states[:, -self.max_length:]
+                timesteps = timesteps[:, -self.max_length:]
+
+                # pad all tokens to sequence length
+                attention_mask = pad(
+                    torch.ones(1, states.shape[1]),
+                    self.max_length).to(
+                    dtype=torch.long, device=states.device).reshape(
+                    1, -1)
+                states = pad(states, self.max_length).to(dtype=torch.float32)
+                timesteps = pad(timesteps, self.max_length).to(dtype=torch.long)
+            else:
+                attention_mask = None
+                raise ValueError('Attention mask should not be none')
+
+            options, option_indx, _, _, _ = self.option_selector(
+                word_embeddings, states, timesteps, attention_mask=attention_mask)
+        else:
+            states = states[:, ::self.horizon, :]
+            options, option_indx, _, _, _ = self.option_selector(
+                word_embeddings, states, None, attention_mask=None)
+
+        return options[0, -1], option_indx[0, -1]
+    
 
 if __name__ == "__main__":
     task = "Put the apple in the basket"

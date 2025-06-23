@@ -155,7 +155,7 @@ class HRLModel(nn.Module, IQMixin):
                     word_embeddings, states, timesteps, attention_mask)      
 
             # # need to make options same length as states and actions
-            options = torch.zeros((batch_size, traj_len, selected_options.shape[-1])).to(selected_options.device)
+            options = torch.zeros((batch_size, traj_len, selected_options.shape[-1]), dtype=torch.float16).to(selected_options.device)
 
             ### This doesn't really work in making only some messages have gradients and others not having gradients
             ### The entire options tensor below has gradients after we do options = selected_options
@@ -176,6 +176,7 @@ class HRLModel(nn.Module, IQMixin):
             # We reshape sequences to K size sub-sequences, so that the sub-policy only uses the current option
             # Here we are choosing K to be horizon since it makes sense but technically we can do any K
             # This ensures the DT only looks at chunks of size horizon
+            self.state_dim = states.shape[2:] if isinstance(self.state_dim, tuple) else states.shape[2]
             if isinstance(self.state_dim, tuple):
                 states = states.reshape(B * num_seq, self.K, *self.state_dim)
             else:
@@ -250,7 +251,7 @@ class HRLModel(nn.Module, IQMixin):
             # preds = self.decision_transformer.get_action(
             #     states, actions, timesteps, options=options)
             encoder_out = self.diffuser.get_action(states, actions, timesteps,
-                                                   options=options, embed_state=self.option_selector.option_dt.embed_state)
+                                                   options=options, embed_state=self.planner.vlm.model)
             stacked_inputs = encoder_out['stacked_inputs']
             option_embeddings = encoder_out['option_embeddings']
 

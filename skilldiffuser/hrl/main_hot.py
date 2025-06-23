@@ -383,6 +383,7 @@ def train(args):
         args.option_selector.option_transformer.max_length = int(train_dataset.max_length)
         args.option_selector.option_transformer.max_ep_len = args.env.eval_episode_factor * \
             int(train_dataset.max_length)
+        args.option_selector['max_length'] = int(train_dataset.max_length)
 
     if args.model.horizon == 'max':
         args.model.horizon = int(train_dataset.max_length)
@@ -528,10 +529,11 @@ def train(args):
 
     unet = model_config()
     diffusion_model = diffusion_config(unet)
-    diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args)
+    diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args).to(torch.float16)
 
     model = HRLModel(args, option_selector_args, state_reconstructor_args,
-                     lang_reconstructor_args, decision_args, planner, diff_trainer, device, **hrl_model_args)
+                     lang_reconstructor_args, decision_args, planner, 
+                     diff_trainer, device, **hrl_model_args).to(torch.float16)
 
     # # load saved arguments
     # checkpoint = torch.load(cfg.checkpoint_path)

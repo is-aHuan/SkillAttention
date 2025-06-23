@@ -83,206 +83,206 @@ class Trainer:
         # self.model.train()
         
         ind = 0
-        for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
-            lm_input = self.planner.tokenizer(text=langs, add_special_tokens=True,
-                                      return_tensors='pt', padding=True).to(self.device)
+        # for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
+        #     lm_input = self.planner.tokenizer(text=langs, add_special_tokens=True,
+        #                               return_tensors='pt', padding=True).to(self.device)
             
 
-            # TODO：Pay Attention Here: dtype float32 or float16
-            if method == 'traj_option' or method == 'option':
-                # --- 准备工作 ---
-                K = self.K
-                B, L, C, H, W = states.shape
-                num_seq = (L // K + 1)
-                padded_length = num_seq * K
+        #     # TODO：Pay Attention Here: dtype float32 or float16
+        #     if method == 'traj_option' or method == 'option':
+        #         # --- 准备工作 ---
+        #         K = self.K
+        #         B, L, C, H, W = states.shape
+        #         num_seq = (L // K + 1)
+        #         padded_length = num_seq * K
 
-                # --- 优化 1: 尽早将 states 移动到目标设备并转为 float16 ---
-                # 这样做可以使后续所有在 GPU 上的操作（尤其是 interpolate）的显存占用减半
-                states = states.to(device=self.device).to(torch.float16) 
+        #         # --- 优化 1: 尽早将 states 移动到目标设备并转为 float16 ---
+        #         # 这样做可以使后续所有在 GPU 上的操作（尤其是 interpolate）的显存占用减半
+        #         states = states.to(device=self.device).to(torch.float16) 
 
-                # --- 核心预处理流程 ---
-                states_reshaped = states.reshape(B * L, C, H, W)
-                # del states # <--- 优化 4: 如果内存极度紧张，可以立即删除原始张量
+        #         # --- 核心预处理流程 ---
+        #         states_reshaped = states.reshape(B * L, C, H, W)
+        #         # del states # <--- 优化 4: 如果内存极度紧张，可以立即删除原始张量
 
-                # upsample：64 x 64 -> expected_image_size x expected_image_size
-                expected_image_size = self.planner.vlm.model.config.vision_config.image_size
-                upsampled_states = F.interpolate(
-                    states_reshaped,
-                    size=(expected_image_size, expected_image_size),
-                    mode='bilinear',
-                    align_corners=False
-                )
-                del states_reshaped # <--- 优化 4: 立即删除 reshape 后的中间张量
+        #         # upsample：64 x 64 -> expected_image_size x expected_image_size
+        #         expected_image_size = self.planner.vlm.model.config.vision_config.image_size
+        #         upsampled_states = F.interpolate(
+        #             states_reshaped,
+        #             size=(expected_image_size, expected_image_size),
+        #             mode='bilinear',
+        #             align_corners=False
+        #         )
+        #         del states_reshaped # <--- 优化 4: 立即删除 reshape 后的中间张量
 
-                # normalize：(states - mean) / std
-                image_mean = torch.tensor(self.planner.image_processor.image_mean)
-                image_std = torch.tensor(self.planner.image_processor.image_std)
-                # upsampled_states.sub_(self.mean.to(torch.float16)).div_(self.std.to(torch.float16))
-                upsampled_states = (upsampled_states - image_mean.to(states.device).view(1, C, 1, 1)) / image_std.to(states.device).view(1, C, 1, 1)
+        #         # normalize：(states - mean) / std
+        #         image_mean = torch.tensor(self.planner.image_processor.image_mean)
+        #         image_std = torch.tensor(self.planner.image_processor.image_std)
+        #         # upsampled_states.sub_(self.mean.to(torch.float16)).div_(self.std.to(torch.float16))
+        #         upsampled_states = (upsampled_states - image_mean.to(states.device).view(1, C, 1, 1)) / image_std.to(states.device).view(1, C, 1, 1)
 
-                states = upsampled_states.reshape(B, L, C, expected_image_size, expected_image_size)
-                del upsampled_states # <--- 优化 4: 立即删除上采样后的中间张量
+        #         states = upsampled_states.reshape(B, L, C, expected_image_size, expected_image_size)
+        #         del upsampled_states # <--- 优化 4: 立即删除上采样后的中间张量
 
-                # --- Padding ---
-                # 注意：actions 等其他张量也应尽早移动到 device
-                actions = actions.to(self.device)
-                timesteps = timesteps.to(self.device)
-                dones = dones.to(self.device)
-                attention_mask = attention_mask.to(self.device)
+        #         # --- Padding ---
+        #         # 注意：actions 等其他张量也应尽早移动到 device
+        #         actions = actions.to(self.device)
+        #         timesteps = timesteps.to(self.device)
+        #         dones = dones.to(self.device)
+        #         attention_mask = attention_mask.to(self.device)
 
-                states = pad(states, padded_length)
-                actions = pad(actions, padded_length)
-                timesteps = pad(timesteps, padded_length)
-                dones = pad(dones, padded_length)
-                attention_mask = pad(attention_mask, padded_length)
+        #         states = pad(states, padded_length)
+        #         actions = pad(actions, padded_length)
+        #         timesteps = pad(timesteps, padded_length)
+        #         dones = pad(dones, padded_length)
+        #         attention_mask = pad(attention_mask, padded_length)
 
-                # --- 优化 3: 避免使用 .clone() ---
-                # .detach() 创建了一个共享内存的视图，但切断了梯度，内存效率高得多
-                action_target = actions.detach()
-                state_target = states.detach()
+        #         # --- 优化 3: 避免使用 .clone() ---
+        #         # .detach() 创建了一个共享内存的视图，但切断了梯度，内存效率高得多
+        #         action_target = actions.detach()
+        #         state_target = states.detach()
 
-            else:
-                # 同样应用优化
-                states = states.to(device=self.device, dtype=torch.float16) # 或者 float16
-                actions = actions.to(self.device)
-                action_target = actions.detach()
-                state_target = states.detach()
+        #     else:
+        #         # 同样应用优化
+        #         states = states.to(device=self.device, dtype=torch.float16) # 或者 float16
+        #         actions = actions.to(self.device)
+        #         action_target = actions.detach()
+        #         state_target = states.detach()
 
-            # --- 后续处理 ---
-            # 注意：由于 states 已经是 float16，这里不再需要 .float()
-            if discrete:
-                actions = F.one_hot(actions.long(), act_dim) # 保持类型一致
-            else:
-                actions = actions.to(torch.float16) # 保持类型一致
+        #     # --- 后续处理 ---
+        #     # 注意：由于 states 已经是 float16，这里不再需要 .float()
+        #     if discrete:
+        #         actions = F.one_hot(actions.long(), act_dim) # 保持类型一致
+        #     else:
+        #         actions = actions.to(torch.float16) # 保持类型一致
 
-            # 其他张量按需转换类型
-            timesteps = timesteps.long()
-            dones = dones.long()
-            attention_mask = attention_mask.long()
-            if discrete:
-                action_target = action_target.long()
-            else:
-                action_target = action_target.to(torch.float16) # 保持类型一致
-            state_target = state_target.to(torch.float16) # 保持类型一致
+        #     # 其他张量按需转换类型
+        #     timesteps = timesteps.long()
+        #     dones = dones.long()
+        #     attention_mask = attention_mask.long()
+        #     if discrete:
+        #         action_target = action_target.long()
+        #     else:
+        #         action_target = action_target.to(torch.float16) # 保持类型一致
+        #     state_target = state_target.to(torch.float16) # 保持类型一致
         
-            # TODO: Pay attention here!
-            num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)
-            diff_train_num = max(num_diff_steps // len(self.train_loader), 1)
-            outputs = self.model(lm_input['input_ids'], lm_input['attention_mask'],
-                                 states, actions, timesteps, iter_num=iter_num, ind=ind,
-                                 diff_train_num=diff_train_num, attention_mask=attention_mask,)
+        #     # TODO: Pay attention here!
+        #     num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)
+        #     diff_train_num = max(num_diff_steps // len(self.train_loader), 1)
+        #     outputs = self.model(lm_input['input_ids'], lm_input['attention_mask'],
+        #                          states, actions, timesteps, iter_num=iter_num, ind=ind,
+        #                          diff_train_num=diff_train_num, attention_mask=attention_mask,)
         
-            state_preds, action_preds = outputs['dt']['state_preds'], outputs['dt']['action_preds']
-            state_rc_preds, state_rc_targets = outputs['state_rc']
-            lang_rc_preds, lang_rc_targets = outputs['lang_rc']
-            commitment_loss = outputs['commitment_loss']
-            diff_loss = outputs['diff_loss']
-            diff_loss = diff_loss.mean()
+        #     state_preds, action_preds = outputs['dt']['state_preds'], outputs['dt']['action_preds']
+        #     state_rc_preds, state_rc_targets = outputs['state_rc']
+        #     lang_rc_preds, lang_rc_targets = outputs['lang_rc']
+        #     commitment_loss = outputs['commitment_loss']
+        #     diff_loss = outputs['diff_loss']
+        #     diff_loss = diff_loss.mean()
         
-            if outputs['entropy'] is not None:
-                entropy, lang_entropy = outputs['entropy'][0], outputs['entropy'][1]
-            else:
-                entropy = None
-                lang_entropy = None
+        #     if outputs['entropy'] is not None:
+        #         entropy, lang_entropy = outputs['entropy'][0], outputs['entropy'][1]
+        #     else:
+        #         entropy = None
+        #         lang_entropy = None
         
-            if commitment_loss is None:
-                commitment_loss = torch.zeros([])
-            commitment_loss = commitment_loss.mean()
+        #     if commitment_loss is None:
+        #         commitment_loss = torch.zeros([])
+        #     commitment_loss = commitment_loss.mean()
         
-            if entropy is None:
-                entropy = torch.zeros([])
-                lang_entropy = torch.zeros([])
-            entropy = entropy.mean()
-            lang_entropy = lang_entropy.mean()
+        #     if entropy is None:
+        #         entropy = torch.zeros([])
+        #         lang_entropy = torch.zeros([])
+        #     entropy = entropy.mean()
+        #     lang_entropy = lang_entropy.mean()
         
-            act_dim = action_preds.shape[-1]
-            B = action_preds.shape[0]
-            if self.state_il:
-                state_dim = state_preds.shape[-1]
-            action_preds = action_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
-            if discrete:
-                action_target = action_target.reshape(-1)[attention_mask.reshape(-1) > 0]
-            else:
-                action_target = action_target.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+        #     act_dim = action_preds.shape[-1]
+        #     B = action_preds.shape[0]
+        #     if self.state_il:
+        #         state_dim = state_preds.shape[-1]
+        #     action_preds = action_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+        #     if discrete:
+        #         action_target = action_target.reshape(-1)[attention_mask.reshape(-1) > 0]
+        #     else:
+        #         action_target = action_target.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
         
-            attention_mask = attention_mask.reshape(B, -1)
-            # Pad extra zero to mask for target state prediction to ignore s_0
-            target_attention_mask = torch.cat(
-                [torch.zeros(B, 1).to(self.device), attention_mask[:, :-1]], axis=-1)
-            # Pred states are from s1, ... s_T (ignoring s_T+1). We remove the last element of the mask to get correct shapes.
-            pred_attention_mask = attention_mask[:, :-1]
+        #     attention_mask = attention_mask.reshape(B, -1)
+        #     # Pad extra zero to mask for target state prediction to ignore s_0
+        #     target_attention_mask = torch.cat(
+        #         [torch.zeros(B, 1).to(self.device), attention_mask[:, :-1]], axis=-1)
+        #     # Pred states are from s1, ... s_T (ignoring s_T+1). We remove the last element of the mask to get correct shapes.
+        #     pred_attention_mask = attention_mask[:, :-1]
         
-            # We actually don't do this in the old DT code
-            if self.state_il:
-                state_preds = state_preds.reshape(-1,
-                                                  state_dim)[pred_attention_mask.reshape(-1) > 0]
-                state_target = state_target.reshape(-1,
-                                                    state_dim)[target_attention_mask.reshape(-1) > 0]
+        #     # We actually don't do this in the old DT code
+        #     if self.state_il:
+        #         state_preds = state_preds.reshape(-1,
+        #                                           state_dim)[pred_attention_mask.reshape(-1) > 0]
+        #         state_target = state_target.reshape(-1,
+        #                                             state_dim)[target_attention_mask.reshape(-1) > 0]
         
-            dones = dones.reshape(-1)[attention_mask.reshape(-1) > 0]
-            if iq:
-                q_preds = outputs['dt']['q_preds']
-                # Get q_values of next states (as the final state is unknown, we use a dummy value of q=0 for state after done=True)
-                # IQ should skip using the last q_val
-                next_q = torch.cat((q_preds[:, 1:, :], torch.zeros(
-                    [B, 1, act_dim]).to(self.device)), dim=1)
-                q_preds = q_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
-                # In this case action_preds come from the q_network
-                action_preds = model.iq_choose_action(q_preds)
-                if discrete:
-                    action_preds = F.one_hot(action_preds.long(), act_dim)
-            else:
-                q_preds, next_q = None, None
+        #     dones = dones.reshape(-1)[attention_mask.reshape(-1) > 0]
+        #     if iq:
+        #         q_preds = outputs['dt']['q_preds']
+        #         # Get q_values of next states (as the final state is unknown, we use a dummy value of q=0 for state after done=True)
+        #         # IQ should skip using the last q_val
+        #         next_q = torch.cat((q_preds[:, 1:, :], torch.zeros(
+        #             [B, 1, act_dim]).to(self.device)), dim=1)
+        #         q_preds = q_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+        #         # In this case action_preds come from the q_network
+        #         action_preds = model.iq_choose_action(q_preds)
+        #         if discrete:
+        #             action_preds = F.one_hot(action_preds.long(), act_dim)
+        #     else:
+        #         q_preds, next_q = None, None
         
-            if self.state_il:
-                act_loss, state_loss = imitation_loss(
-                    action_preds, action_target, state_preds, state_target, q_preds, next_q, dones, discrete,
-                    loss_fn=model.iq_critic_loss, step=iter_num)
-            else:
-                act_loss, state_loss = imitation_loss(
-                    action_preds, action_target, None, None, q_preds, next_q, dones, discrete,
-                    loss_fn=model.iq_critic_loss, step=iter_num)
+        #     if self.state_il:
+        #         act_loss, state_loss = imitation_loss(
+        #             action_preds, action_target, state_preds, state_target, q_preds, next_q, dones, discrete,
+        #             loss_fn=model.iq_critic_loss, step=iter_num)
+        #     else:
+        #         act_loss, state_loss = imitation_loss(
+        #             action_preds, action_target, None, None, q_preds, next_q, dones, discrete,
+        #             loss_fn=model.iq_critic_loss, step=iter_num)
         
-            options_loss = outputs['dt']['options_loss'] if 'options_loss' in outputs['dt'] else None
-            if options_loss is None:
-                options_loss = torch.zeros([])
-            else:
-                options_loss = options_loss.mean()  ### because we get output from several GPUs
+        #     options_loss = outputs['dt']['options_loss'] if 'options_loss' in outputs['dt'] else None
+        #     if options_loss is None:
+        #         options_loss = torch.zeros([])
+        #     else:
+        #         options_loss = options_loss.mean()  ### because we get output from several GPUs
         
-            state_rc_loss = state_reconstruction_loss(state_rc_preds, state_rc_targets)
-            lang_rc_loss = lang_reconstruction_loss(lang_rc_preds, lang_rc_targets)
+        #     state_rc_loss = state_reconstruction_loss(state_rc_preds, state_rc_targets)
+        #     lang_rc_loss = lang_reconstruction_loss(lang_rc_preds, lang_rc_targets)
         
-            # loss = act_loss + state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss
-            loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss  # 0.001
-            # loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss
+        #     # loss = act_loss + state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss
+        #     loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss  # 0.001
+        #     # loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss
         
-            # TODO delete
-            # if (ind+1) % 10 == 0:
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), .25)
-            self.optimizer.step()
+        #     # TODO delete
+        #     # if (ind+1) % 10 == 0:
+        #     self.optimizer.zero_grad()
+        #     loss.backward()
+        #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), .25)
+        #     self.optimizer.step()
         
-            train_losses.append(loss.detach().cpu().item())
-            if discrete:
-                action_errors.append(1 - torch.mean(
-                    (torch.argmax(action_preds, dim=1) == action_target).float()).detach().cpu().item())
-            action_losses.append(act_loss.detach().cpu().item())
-            state_losses.append(state_loss.detach().cpu().item())
-            option_losses.append(options_loss.detach().cpu().item())
-            diffuser_losses.append(diff_loss.detach().cpu().item())
-            state_rc_losses.append(state_rc_loss.detach().cpu().item())
-            lang_rc_losses.append(lang_rc_loss.detach().cpu().item())
-            commitment_losses.append(commitment_loss.detach().cpu().item())
-            entropies.append(entropy.detach().cpu().item())
-            lang_entropies.append(lang_entropy.detach().cpu().item())
-            mutual_info.append(entropies[-1] - lang_entropies[-1])
+        #     train_losses.append(loss.detach().cpu().item())
+        #     if discrete:
+        #         action_errors.append(1 - torch.mean(
+        #             (torch.argmax(action_preds, dim=1) == action_target).float()).detach().cpu().item())
+        #     action_losses.append(act_loss.detach().cpu().item())
+        #     state_losses.append(state_loss.detach().cpu().item())
+        #     option_losses.append(options_loss.detach().cpu().item())
+        #     diffuser_losses.append(diff_loss.detach().cpu().item())
+        #     state_rc_losses.append(state_rc_loss.detach().cpu().item())
+        #     lang_rc_losses.append(lang_rc_loss.detach().cpu().item())
+        #     commitment_losses.append(commitment_loss.detach().cpu().item())
+        #     entropies.append(entropy.detach().cpu().item())
+        #     lang_entropies.append(lang_entropy.detach().cpu().item())
+        #     mutual_info.append(entropies[-1] - lang_entropies[-1])
         
-            # TODO delete
-            if self.scheduler is not None:
-                self.scheduler.step()
+        #     # TODO delete
+        #     if self.scheduler is not None:
+        #         self.scheduler.step()
         
-            ind += 1
+        #     ind += 1
         
         logs['time/training'] = time.time() - train_start
         
@@ -350,7 +350,7 @@ class Trainer:
                 env = BabyAIWrapper(self.env, self.train_loader.dataset)
 
                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                    env, no_lang, self.planner, model, max_ep_len, self.K, words_dict, render, device,
                     render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i, ema_diffusion_model=ema_diffusion_model)
 
                 if render and i % render_freq == 0:
@@ -407,7 +407,7 @@ class Trainer:
                                       instr=instr, orig_instr=instr)
                     with torch.no_grad():
                         episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                            env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                            env, no_lang, self.planner, model, max_ep_len, self.K, words_dict, render, device,
                             render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                             render_freq=render_freq, iter_num=iter_num, i=i)
 
@@ -466,7 +466,7 @@ class Trainer:
                                               instr=instr, orig_instr=orig_instr)
                             with torch.no_grad():
                                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                                    env, no_lang, self.planner, model, max_ep_len, self.K, words_dict, render, device,
                                     render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                                     render_freq=render_freq, iter_num=iter_num, i=i)
 
@@ -510,7 +510,7 @@ class Trainer:
                 env = BaseWrapper(self.env, self.train_loader.dataset)
 
                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.planner.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
+                    env, no_lang, self.planner, model, max_ep_len, self.K, words_dict, render, device,
                     render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i)
 
                 if render and i % render_freq == 0:
