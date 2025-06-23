@@ -115,7 +115,7 @@ option_selector:
     output_attention: False
 
 dt:
-    hidden_size: 128
+    hidden_size: 3584
     n_layer: 1
     n_head: 4
     option_il: False

@@ -54,7 +54,7 @@ def evaluate(cfg):
 
     args.method = args.model.name
 
-    exp_name = f'eval-{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
+    exp_name = f'Tune-eval-{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
     if args.wandb:
@@ -307,7 +307,7 @@ def train(args):
     args.method = args.model.name
     # args.method = "option"
     # args.model.name = "option"
-    exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
+    exp_name = f'Tune-train-{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     # time_zone = pytz.timezone('Asia/Shanghai')
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
@@ -324,7 +324,6 @@ def train(args):
     if not os.path.isdir(args.savepath):
         os.makedirs(args.savepath, exist_ok=True)
 
-    planner = HighLevelPlanner()
     # tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 
     #K = args['K']
@@ -394,6 +393,9 @@ def train(args):
     option_selector_args['state_dim'] = state_dim
     option_selector_args['option_dim'] = args.option_dim
     option_selector_args['codebook_dim'] = args.codebook_dim
+    
+    planner = HighLevelPlanner(lang_dim=3584, **option_selector_args).to(device=device)
+
     state_reconstructor_args = dict(args.state_reconstructor)
     lang_reconstructor_args = dict(args.lang_reconstructor)
     decision_args = {'state_dim': state_dim,
@@ -529,7 +531,7 @@ def train(args):
     diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args)
 
     model = HRLModel(args, option_selector_args, state_reconstructor_args,
-                     lang_reconstructor_args, decision_args, planner.model.model.language_model, diff_trainer, device, **hrl_model_args)
+                     lang_reconstructor_args, decision_args, planner, diff_trainer, device, **hrl_model_args)
 
     # # load saved arguments
     # checkpoint = torch.load(cfg.checkpoint_path)
@@ -712,6 +714,6 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     # os.environ["CUDA_VISIBLE_DEVICES"]="4"
-    # main()
-    planner = HighLevelPlanner(model_id="BAAI/RoboBrain")
+    main()
+    # planner = HighLevelPlanner(model_id="BAAI/RoboBrain")
 

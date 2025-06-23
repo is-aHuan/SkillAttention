@@ -87,7 +87,9 @@ class DecEncoder(TrajectoryModel):
         # if use_language:
         #     self.embed_lang = nn.Linear(lang_dim, hidden_size)
 
-        self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
+        # self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
+        self.embed_ln = nn.LayerNorm(hidden_size)  # TODO  Very Important
+
         # if kwargs['eval'] == True:
         #     self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)
         # else:

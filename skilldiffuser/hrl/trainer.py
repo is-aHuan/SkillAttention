@@ -26,11 +26,14 @@ class Trainer:
         self.args = args
         self.model = model
         self.planner = planner
+        # self.expected_image_size = planner.vlm.model.config.vision_config.image_size
+        # self.mean = planner.image_processor.image_mean
+        # self.std = planner.image_processor.image_std
 
         if train_vlm:
-            self.planner.model.train()
+            self.planner.vlm.model.train()
         else:
-            self.planner.model.eval()
+            self.planner.vlm.model.eval()
 
         self.optimizer = optimizer
         self.train_loader = train_loader
@@ -83,37 +86,84 @@ class Trainer:
         for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
             lm_input = self.planner.tokenizer(text=langs, add_special_tokens=True,
                                       return_tensors='pt', padding=True).to(self.device)
-        
+            
+
+            # TODO：Pay Attention Here: dtype float32 or float16
             if method == 'traj_option' or method == 'option':
-                # Pad sequences to allows reshape
+                # --- 准备工作 ---
                 K = self.K
-                B, L = states.shape[0], states.shape[1]
+                B, L, C, H, W = states.shape
                 num_seq = (L // K + 1)
                 padded_length = num_seq * K
-        
-                # This ensures the DT only looks at chunks of size horizon
+
+                # --- 优化 1: 尽早将 states 移动到目标设备并转为 float16 ---
+                # 这样做可以使后续所有在 GPU 上的操作（尤其是 interpolate）的显存占用减半
+                states = states.to(device=self.device).to(torch.float16) 
+
+                # --- 核心预处理流程 ---
+                states_reshaped = states.reshape(B * L, C, H, W)
+                # del states # <--- 优化 4: 如果内存极度紧张，可以立即删除原始张量
+
+                # upsample：64 x 64 -> expected_image_size x expected_image_size
+                expected_image_size = self.planner.vlm.model.config.vision_config.image_size
+                upsampled_states = F.interpolate(
+                    states_reshaped,
+                    size=(expected_image_size, expected_image_size),
+                    mode='bilinear',
+                    align_corners=False
+                )
+                del states_reshaped # <--- 优化 4: 立即删除 reshape 后的中间张量
+
+                # normalize：(states - mean) / std
+                image_mean = torch.tensor(self.planner.image_processor.image_mean)
+                image_std = torch.tensor(self.planner.image_processor.image_std)
+                # upsampled_states.sub_(self.mean.to(torch.float16)).div_(self.std.to(torch.float16))
+                upsampled_states = (upsampled_states - image_mean.to(states.device).view(1, C, 1, 1)) / image_std.to(states.device).view(1, C, 1, 1)
+
+                states = upsampled_states.reshape(B, L, C, expected_image_size, expected_image_size)
+                del upsampled_states # <--- 优化 4: 立即删除上采样后的中间张量
+
+                # --- Padding ---
+                # 注意：actions 等其他张量也应尽早移动到 device
+                actions = actions.to(self.device)
+                timesteps = timesteps.to(self.device)
+                dones = dones.to(self.device)
+                attention_mask = attention_mask.to(self.device)
+
                 states = pad(states, padded_length)
                 actions = pad(actions, padded_length)
                 timesteps = pad(timesteps, padded_length)
                 dones = pad(dones, padded_length)
                 attention_mask = pad(attention_mask, padded_length)
-        
-            action_target = torch.clone(actions).detach()
-            state_target = torch.clone(states).detach()
-        
-            if discrete:
-                actions = F.one_hot(actions.long(), act_dim)
-        
-            states = states.float().to(self.device)
-            actions = actions.float().to(self.device)
-            timesteps = timesteps.long().to(self.device)
-            dones = dones.long().to(self.device)
-            attention_mask = attention_mask.long().to(self.device)
-            if discrete:
-                action_target = action_target.long().to(self.device)
+
+                # --- 优化 3: 避免使用 .clone() ---
+                # .detach() 创建了一个共享内存的视图，但切断了梯度，内存效率高得多
+                action_target = actions.detach()
+                state_target = states.detach()
+
             else:
-                action_target = action_target.float().to(self.device)
-            state_target = state_target.float().to(self.device)
+                # 同样应用优化
+                states = states.to(device=self.device, dtype=torch.float16) # 或者 float16
+                actions = actions.to(self.device)
+                action_target = actions.detach()
+                state_target = states.detach()
+
+            # --- 后续处理 ---
+            # 注意：由于 states 已经是 float16，这里不再需要 .float()
+            if discrete:
+                actions = F.one_hot(actions.long(), act_dim) # 保持类型一致
+            else:
+                actions = actions.to(torch.float16) # 保持类型一致
+
+            # 其他张量按需转换类型
+            timesteps = timesteps.long()
+            dones = dones.long()
+            attention_mask = attention_mask.long()
+            if discrete:
+                action_target = action_target.long()
+            else:
+                action_target = action_target.to(torch.float16) # 保持类型一致
+            state_target = state_target.to(torch.float16) # 保持类型一致
         
             # TODO: Pay attention here!
             num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)

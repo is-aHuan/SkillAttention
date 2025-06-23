@@ -17,7 +17,7 @@ class HRLModel(nn.Module, IQMixin):
     """Base class containing all the models"""
 
     def __init__(self, args, option_selector_args, state_reconstructor_args, lang_reconstructor_args,
-                 decision_args, lang_model, diff_trainer, device, horizon=5, K=10, train_lm=True,
+                 decision_args, planner, diff_trainer, device, horizon=5, K=10, train_lm=True,
                  method='vanilla', state_reconstruct=False, lang_reconstruct=False, **kwargs):
         super().__init__()
 
@@ -25,14 +25,19 @@ class HRLModel(nn.Module, IQMixin):
         self.horizon = horizon
         self.K = K
         # self.lm = DistilBertModel.from_pretrained('distilbert-base-uncased')
-        self.lm = lang_model
+        self.lm = planner.vlm.model.language_model  # e.g., llava-7b-hf
+        self.planner = planner
+
         self.train_lm = train_lm  # whether to train lm or not
         self.device = device
 
+        # TODO eval llm or vlm
         if train_lm:
             self.lm.train()
+            self.planner.vlm.model.train()
         else:
             self.lm.eval()
+            self.planner.vlm.model.eval()
 
         self.method = method
         self.state_reconstruct = state_reconstruct
@@ -92,9 +97,11 @@ class HRLModel(nn.Module, IQMixin):
             with torch.no_grad():
                 # 对于Llama/RoboBrain，lm()的输出是一个包含多个元素的元组或对象
                 # 第一个元素(outputs[0])或.last_hidden_state就是我们需要的隐藏状态
-                lm_embeddings = self.lm(input_ids=lm_input_ids, attention_mask=lm_attention_mask).last_hidden_state
+                outputs = self.lm.model(input_ids=lm_input_ids, attention_mask=lm_attention_mask)
+                lm_embeddings = outputs.last_hidden_state
         else:
-            lm_embeddings = self.lm(input_ids=lm_input_ids, attention_mask=lm_attention_mask).last_hidden_state
+            outputs = self.lm.model(input_ids=lm_input_ids, attention_mask=lm_attention_mask)
+            lm_embeddings = outputs.last_hidden_state
 
         # 关键改动：不再使用 [CLS] token
         # 1. 获取代表整个序列的嵌入 (sequence_embedding)
@@ -130,13 +137,22 @@ class HRLModel(nn.Module, IQMixin):
             # we change options only every H states. Say this leads to N states
             # N selected options
             # B, max_length // H, option_dim
+            
+            # if self.method == 'option':
+            #     # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
+            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+            #         word_embeddings.mean(1, keepdim=True), states)
+            # else:
+            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+            #         word_embeddings, states, timesteps, attention_mask)
+                
             if self.method == 'option':
                 # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
-                selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+                selected_options, _, commitment_loss, entropy, state_embeddings = self.planner.option_selector(
                     word_embeddings.mean(1, keepdim=True), states)
             else:
-                selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-                    word_embeddings, states, timesteps, attention_mask)
+                selected_options, _, commitment_loss, entropy, state_embeddings = self.planner.option_selector(
+                    word_embeddings, states, timesteps, attention_mask)      
 
             # # need to make options same length as states and actions
             options = torch.zeros((batch_size, traj_len, selected_options.shape[-1])).to(selected_options.device)
