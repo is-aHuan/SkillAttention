@@ -17,6 +17,7 @@ class HighLevelPlanner(nn.Module):
     
     def __init__(self,             
             lang_dim,
+            device,
             option_dim,
             max_length=None,
             max_ep_len=4096,
@@ -32,7 +33,7 @@ class HighLevelPlanner(nn.Module):
         self.use_vq = kwargs.get('use_vq', True)
         self.max_length = max_length
 
-        self.vlm = SimpleInference(model_id, lora_id)
+        self.vlm = SimpleInference(model_id, lora_id, device)
         image_size = self.vlm.model.config.vision_config.image_size
         self.state_dim = (3, image_size, image_size) if isinstance(image_size, int) else image_size
 

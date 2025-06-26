@@ -44,7 +44,8 @@ weight_decay: 1e-4
 os_learning_rate: 1e-4
 
 trainer:
-  device:  ## to be filled in code
+  train_device:  ## skill model train device
+  inference_device:  ## high level llm model inference device
   state_il: False
   num_eval_episodes: 100
   eval_every: 1

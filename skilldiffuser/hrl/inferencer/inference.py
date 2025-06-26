@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from transformers import AutoProcessor, AutoModelForPreTraining
 from PIL import Image
 
@@ -8,7 +9,7 @@ class SimpleInference:
     Supports both local images and image URLs as input.
     """
     
-    def __init__(self, model_id="BAAI/RoboBrain", lora_id=None):
+    def __init__(self, model_id="BAAI/RoboBrain", lora_id=None, device="cuda:0"):
         """
         Initialize the model and processor.
         
@@ -16,12 +17,14 @@ class SimpleInference:
             model_id (str): Path or Hugging Face model identifier (default: "BAAI/RoboBrain")
             lora_id (str, optional): Path or Hugging Face model for LoRA weights. Defaults to None.
         """
-        print("Loading Checkpoint ...")
+        # print("Loading Checkpoint ...")
+        self.device = torch.device(device)
+
         self.model = AutoModelForPreTraining.from_pretrained(
             model_id, 
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True, 
-        ).to("cuda:0")
+        ).to(device)
 
         self.processor = AutoProcessor.from_pretrained(model_id)
 
