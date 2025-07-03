@@ -87,9 +87,7 @@ class DecEncoder(TrajectoryModel):
         # if use_language:
         #     self.embed_lang = nn.Linear(lang_dim, hidden_size)
 
-        # self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
-        self.embed_ln = nn.LayerNorm(hidden_size).to(torch.float16)  # TODO  Very Important
-
+        self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
         # if kwargs['eval'] == True:
         #     self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)
         # else:
@@ -97,14 +95,14 @@ class DecEncoder(TrajectoryModel):
         # self.embed_bn = nn.BatchNorm1d(K)
         # note: we don't predict states or returns for the paper
         if isinstance(self.state_dim, int):
-            self.predict_state = torch.nn.Linear(hidden_size, self.state_dim).to(torch.float16)  # TODO
+            self.predict_state = torch.nn.Linear(hidden_size, self.state_dim)
         # self.predict_action = nn.Sequential(
         #     *([nn.Linear(hidden_size, self.act_dim)] + ([nn.Tanh()] if action_tanh and not discrete else []))
         # )
         # if use_options:
         #     self.predict_option = torch.nn.Linear(hidden_size, self.option_dim)  # TODO
         if predict_q:
-            self.predict_q = torch.nn.Linear(hidden_size, self.act_dim).to(torch.float16)  # TODO
+            self.predict_q = torch.nn.Linear(hidden_size, self.act_dim)
 
     def encode(self, states, actions, timesteps, options=None, state_embeddings=None, attention_mask=None):
 
@@ -286,8 +284,6 @@ class DecEncoder(TrajectoryModel):
         #     return outputs
 
     def get_action(self, states, actions, timesteps, options=None, embed_state=None, word_embeddings=None, **kwargs):
-        
-        self.state_dim = (3, 384, 384)  # TODO  Very Important
 
         if self.use_options:
             assert options is not None
@@ -308,32 +304,25 @@ class DecEncoder(TrajectoryModel):
                 # pad all tokens to sequence length  TODO Important
                 # attention_mask = pad(torch.ones(1, states.shape[1]), self.max_length).to(
                 #     dtype=torch.long, device=states.device).reshape(1, -1)
-                states = pad(states, self.max_length).to(dtype=torch.float16)
-                options = pad(options, self.max_length).to(dtype=torch.float16)
-                actions = pad(actions, self.max_length).to(dtype=torch.float16)
-                timesteps = pad(timesteps, self.max_length).to(dtype=torch.float16)
+                states = pad(states, self.max_length).to(dtype=torch.float32)
+                options = pad(options, self.max_length).to(dtype=torch.float32)
+                actions = pad(actions, self.max_length).to(dtype=torch.float32)
+                timesteps = pad(timesteps, self.max_length).to(dtype=torch.long)
 
+                states = states.to(dtype=torch.float32)
+                options = options.to(dtype=torch.float32)
+                actions = actions.to(dtype=torch.float32)
+                timesteps = timesteps.to(dtype=torch.long)
             else:
                 raise ValueError('Should not have max_length NONE')
 
             attention_mask = None
 
-            batch_size, seq_length = states.shape[0], states.shape[1]
-            channels, height, width = states.shape[2], states.shape[3], states.shape[4]
             with torch.no_grad():
-                states = states.reshape(batch_size * seq_length, channels, height, width)
-                image_features = embed_state.vision_tower(states.to(torch.float16))[0]
-                image_features = image_features.mean(dim=1)  # (batch_size, seq_length, hidden)
-                state_embeddings = embed_state.multi_modal_projector(image_features)
-                
-                states = states.reshape(batch_size, seq_length, channels, height, width)
-                state_embeddings = state_embeddings.reshape(batch_size, seq_length, -1)
-                # state_embeddings = embed_state(states)
+                state_embeddings = embed_state(states)
                 encoder_out = self.encode(states, actions, timesteps, options=options,
                                           state_embeddings=state_embeddings,
                                           attention_mask=attention_mask)
-                
-            
 
             # preds = self.forward(
             #     states, actions, timesteps, options=options, attention_mask=attention_mask, get_action=True)

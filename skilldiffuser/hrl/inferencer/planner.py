@@ -1,11 +1,7 @@
 import re
-import torch
-from torch import nn
-from inferencer import SimpleInference
-from utils import pad, entropy
-from vector_quantize_pytorch import VectorQuantize
+from hrl.inferencer import SimpleInference
 
-class HighLevelPlanner(nn.Module):
+class HighLevelPlanner:
     """
     HighLevelPlanner leverages a pre-trained model to generate a detailed step-by-step plan for a given task and image,
     and provides functionality to verify the success of each subtask.
@@ -15,47 +11,8 @@ class HighLevelPlanner(nn.Module):
         lora_id (str, optional): Identifier for the LoRA adapter to use. Defaults to None.
     """
     
-    def __init__(self,             
-            lang_dim,
-            device,
-            option_dim,
-            max_length=None,
-            max_ep_len=4096,
-            model_id="BAAI/RoboBrain", 
-            lora_id=None,
-            **kwargs):
-        
-        super(HighLevelPlanner, self).__init__()
-        
-        self.lang_dim = lang_dim
-        self.horizon = kwargs['horizon']
-        self.output_attentions = kwargs.get('output_attentions', False)
-        self.use_vq = kwargs.get('use_vq', True)
-        self.max_length = max_length
-
-        self.vlm = SimpleInference(model_id, lora_id, device)
-        image_size = self.vlm.model.config.vision_config.image_size
-        self.state_dim = (3, image_size, image_size) if isinstance(image_size, int) else image_size
-
-        assert hasattr(self.vlm.processor, 'tokenizer'), "The model processor must have a tokenizer."
-        self.tokenizer = self.vlm.processor.tokenizer
-        self.image_processor = self.vlm.processor.image_processor
-        
-        self.time_embedding = nn.Embedding(max_ep_len, lang_dim).to(torch.float16)
-        self.option_head = nn.Linear(lang_dim, option_dim).to(torch.float16)
-
-        self.Z = VectorQuantize(
-            dim=option_dim,
-            codebook_dim=kwargs['codebook_dim'],       # codebook vector size
-            codebook_size=kwargs['num_options'],     # codebook size
-            decay=0.99,             # the exponential moving average decay, lower means the dictionary will change faster
-            commitment_weight=kwargs['commitment_weight'],   # the weight on the commitment loss
-            kmeans_init=kwargs['kmeans_init'],   # use kmeans init
-            cpc=False,
-            # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
-            use_cosine_sim=False   # l2 normalize the codes
-        ).to(torch.float16)
-        
+    def __init__(self, model_id="BAAI/RoboBrain", lora_id=None):
+        self.model = SimpleInference(model_id, lora_id)
 
     def decompose_task(self, task, image):
         prompt = (
@@ -71,7 +28,7 @@ class HighLevelPlanner(nn.Module):
         #     Step_1: xxx\nStep_2: xxx\n ...\nStep_n: xxx\n
         # """
 
-        prediction = self.vlm.inference(prompt, image, do_sample=True)
+        prediction = self.model.inference(prompt, image, do_sample=True)
         print(f"Prediction: \n{prediction}")
         print('=' * 50)
 
@@ -117,110 +74,8 @@ class HighLevelPlanner(nn.Module):
         # Answer:
         # """
 
-        response = self.vlm.inference(prompt, image, do_sample=False)
+        response = self.model.inference(prompt, image, do_sample=False)
         return response.lower() == "yes"
-    
-    def option_selector(self, word_embeddings, states, timesteps, attention_mask=None):
-        batch_size, seq_length = states.shape[0], states.shape[1]
-        channels, height, width = states.shape[2], states.shape[3], states.shape[4]
-
-        num_tokens = word_embeddings.shape[1]
-
-        if attention_mask is None:
-            raise ValueError("Attention mask is required for option selection.")
-        device = self.vlm.model.device
-        
-        #    这部分需要手动模拟 LLaVA 的内部处理流程
-        with torch.no_grad():
-            # image_inputs = self.image_processor(images=states, return_tensors="pt").to(device)
-            states = states.reshape(batch_size * seq_length, channels, height, width).to(device)
-
-            # image_features = self.vlm.model.vision_tower(image_inputs['pixel_values'].to(torch.float16))[0]
-            image_features = self.vlm.model.vision_tower(states.to(torch.float16))[0]
-            image_features = image_features.mean(dim=1)  # (batch_size, seq_length, hidden)
-            
-            state_embeddings = self.vlm.model.multi_modal_projector(image_features)
-
-        state_embeddings = state_embeddings.reshape(batch_size, seq_length, -1)
-        ret_state_embeddings = state_embeddings.clone().detach()
-        time_embeddings = self.time_embedding(timesteps)
-
-        # time embeddings are treated similar to positional embeddings
-        state_embeddings = state_embeddings + time_embeddings  # (batch_size, seq_length, hidden)
-        lang_and_inputs = torch.cat([word_embeddings, state_embeddings], dim=1)
-        lang_attn_mask = torch.cat([torch.ones((batch_size, num_tokens), device=states.device, dtype=attention_mask.dtype), attention_mask], dim=1)
-
-        with torch.no_grad():
-            outputs = self.vlm.model.language_model.model(
-                inputs_embeds=lang_and_inputs,
-                attention_mask=lang_attn_mask, # <-- use mask
-                output_hidden_states=True,
-                output_attentions=self.output_attentions
-            )
-
-        last_hidden_state = outputs.last_hidden_state
-        lang_out = last_hidden_state[:, :num_tokens, :].reshape(batch_size, num_tokens, self.lang_dim)
-        traj_out = last_hidden_state[:, num_tokens:, :].reshape(batch_size, seq_length, self.lang_dim)
-
-        # get predictions
-        # predict option logits given state
-        option_preds = self.option_head(traj_out)[:, ::self.horizon, :]  # (batch_size, num_options, option_dim)
-
-        if self.use_vq:
-            options, indices, commitment_loss = self.Z(option_preds)
-            entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
-        else:
-            # TODO: For now simply return the first dim of option
-            options, indices = option_preds, option_preds[:, :, 0]
-            commitment_loss = None
-            entropies = None
-
-        # TODO：Need to Fix!
-        if self.output_attentions:
-            attentions = outputs.attentions
-            return option_preds, attentions, ret_state_embeddings
-
-        return options, indices, commitment_loss, entropies, ret_state_embeddings
-    
-    def get_option(self, word_embeddings, states, timesteps, method, **kwargs):
-
-        if 'constant_option' in kwargs:
-            return self.Z.project_out(
-                self.Z.codebook[kwargs['constant_option']]), torch.tensor(
-                kwargs['constant_option'])
-
-        if method == 'traj_option':
-            if isinstance(self.state_dim, tuple):
-                states = states.reshape(1, -1, *self.state_dim)
-            else:
-                states = states.reshape(1, -1, self.state_dim)
-            
-            timesteps = timesteps.reshape(1, -1)
-            if self.max_length is not None:
-                states = states[:, -self.max_length:]
-                timesteps = timesteps[:, -self.max_length:]
-
-                # pad all tokens to sequence length
-                attention_mask = pad(
-                    torch.ones(1, states.shape[1]),
-                    self.max_length).to(
-                    dtype=torch.long, device=states.device).reshape(
-                    1, -1)
-                states = pad(states, self.max_length).to(dtype=torch.float32)
-                timesteps = pad(timesteps, self.max_length).to(dtype=torch.long)
-            else:
-                attention_mask = None
-                raise ValueError('Attention mask should not be none')
-
-            options, option_indx, _, _, _ = self.option_selector(
-                word_embeddings, states, timesteps, attention_mask=attention_mask)
-        else:
-            states = states[:, ::self.horizon, :]
-            options, option_indx, _, _, _ = self.option_selector(
-                word_embeddings, states, None, attention_mask=None)
-
-        return options[0, -1], option_indx[0, -1]
-    
 
 if __name__ == "__main__":
     task = "Put the apple in the basket"

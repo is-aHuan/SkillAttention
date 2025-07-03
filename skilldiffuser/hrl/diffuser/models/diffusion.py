@@ -426,7 +426,7 @@ class GaussianInvDynDiffusion(nn.Module):
         model_mean, _, model_log_variance = self.p_mean_variance(x=x, cond=cond, t=t, returns=returns)
         noise = 0.5*torch.randn_like(x)
         # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1))).to(torch.float16)
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
         return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
     @torch.no_grad()
@@ -434,7 +434,7 @@ class GaussianInvDynDiffusion(nn.Module):
         device = self.betas.device
 
         batch_size = shape[0]
-        x = 0.5*torch.randn(shape, device=device, dtype=torch.float16)
+        x = 0.5*torch.randn(shape, device=device)
         x = apply_conditioning(x, cond, 0)
 
         if return_diffusion: diffusion = [x]

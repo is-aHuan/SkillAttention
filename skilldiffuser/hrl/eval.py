@@ -1,7 +1,6 @@
 import pdb
 
 import torch
-from torch.nn import functional as F
 # import numpy as np
 
 # import gym
@@ -178,7 +177,7 @@ from viz import get_tokens
 #             torch.cat([timesteps_list[i], timesteps_list[i][-1].reshape(1, 1) + 1], dim=0) for i in range(N)]
 
 
-def eval_episode(env, no_lang, planner, model, max_ep_len, K, words_dict, render, device, ema_diffusion_model, **kwargs):
+def eval_episode(env, no_lang, tokenizer, planner, model, max_ep_len, K, words_dict, render, device, ema_diffusion_model, **kwargs):
     """Evaluate a single episode."""
     images = []
     method = model.method
@@ -203,59 +202,46 @@ def eval_episode(env, no_lang, planner, model, max_ep_len, K, words_dict, render
         lang = ''
 
     state_dim = env.state_dim
-    # state_dim = planner.state_dim
     act_dim = env.act_dim
     cur_state = torch.from_numpy(cur_state)
 
     # we keep all the histories on the device
     # note that the latest action and reward will be "padding"
-    lm_input = planner.tokenizer(text=[lang], add_special_tokens=True,
+    lm_input = tokenizer(text=[lang], add_special_tokens=True,
                          return_tensors='pt', padding=True).to(device=device)
+    sub_task_lang = planner.decompose_task(lang, cur_state)
+    sub_task_input = tokenizer(text=sub_task_lang, add_special_tokens=True,
+                         return_tensors='pt', padding=True).to(device=device)
+
     with torch.no_grad():
         # lm_embeddings = model.lm(
         #     lm_input['input_ids'], lm_input['attention_mask']).last_hidden_state
-        outputs = model.lm.model(lm_input['input_ids'], lm_input['attention_mask'])
-        lm_embeddings = outputs.last_hidden_state
-
-        last_token_indices = lm_input['attention_mask'].sum(dim=1) - 1
-        sequence_embeddings = lm_embeddings[:, last_token_indices, :]
-        cls_embeddings = sequence_embeddings.unsqueeze(1) # 保持维度一致 (batch, 1, dim)
-        word_embeddings = lm_embeddings  # skip the last token (CLS
-
         # cls_embeddings = lm_embeddings[:, 0, :]
         # # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
         # word_embeddings = lm_embeddings[:, 1:, :]      # skip the CLS tokens
 
+        subtask_lm_embeddings = model.lm(
+            sub_task_input['input_ids'], sub_task_input['attention_mask']).last_hidden_state
+        subtask_cls_embeddings = subtask_lm_embeddings[:, 0, :]
+        # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
+        subtask_word_embeddings = subtask_lm_embeddings[:, 1:, :]      # skip the CLS tokens
+
     if isinstance(state_dim, tuple):
-        cur_state = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
+        states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
     else:
-        cur_state = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float32)
+        states = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float32)
 
-    # upsample：64 x 64 -> expected_image_size x expected_image_size
-    expected_image_size = planner.vlm.model.config.vision_config.image_size
-    cur_state = F.interpolate(
-        cur_state,
-        size=(expected_image_size, expected_image_size),
-        mode='bilinear',
-        align_corners=False
-    )
-
-    C = cur_state.shape[1]  # number of channels
-    image_mean = torch.tensor(planner.image_processor.image_mean).to(device=device)
-    image_std = torch.tensor(planner.image_processor.image_std).to(device=device)
-    states = (cur_state - image_mean.view(1, C, 1, 1)) / image_std.view(1, C, 1, 1)
-    states = states.to(torch.float16)
-        
-    actions = torch.zeros((0, act_dim), device=device, dtype=torch.float16)
+    actions = torch.zeros((0, act_dim), device=device, dtype=torch.float32)
     timesteps = torch.tensor(0, device=device, dtype=torch.long).reshape(1, 1)
     if method != 'vanilla':
-        options = torch.zeros((0, option_dim), device=device, dtype=torch.float16)
+        options = torch.zeros((0, option_dim), device=device, dtype=torch.float32)
 
     episode_return, episode_length, success = 0, 0, 0
     options_list = []
 
     option = None
     action_hist = None
+    sub_task_idx = 0
 
     for t in range(max_ep_len):
         # add dummy action
@@ -266,10 +252,12 @@ def eval_episode(env, no_lang, planner, model, max_ep_len, K, words_dict, render
             options = None
 
         if action_hist is None:
+            word_embeddings = subtask_word_embeddings[sub_task_idx, :, :].unsqueeze_(0)
+            cls_embeddings = subtask_cls_embeddings[sub_task_idx, :, :].unsqueeze_(0)
 
             action_hist, option, states, actions, timesteps, options = get_action(
                 model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state,
-                option, t, horizon, K, method, planner.state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs)
+                option, t, horizon, K, method, state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs)
 
             action = action_hist[0]
             action_hist = action_hist[1:] if action_hist.shape[0] > 1 else None
@@ -301,14 +289,12 @@ def eval_episode(env, no_lang, planner, model, max_ep_len, K, words_dict, render
         else:
             cur_state = torch.from_numpy(state).to(device=device).reshape(1, state_dim)
 
-        cur_state = F.interpolate(
-            cur_state,
-            size=(expected_image_size, expected_image_size),
-            mode='bilinear',
-            align_corners=False
-        )
+        # TODO: 如果子任务指令用完了，是继续使用最后一个还是使用总任务指令？
+        if action_hist is None:
+            is_subtask_finish = planner.verify_subtask(sub_task_lang[sub_task_idx], cur_state)
+            if is_subtask_finish:
+                sub_task_idx = min(sub_task_idx + 1, len(sub_task_lang) - 1)
 
-        cur_state = (cur_state - image_mean.view(1, C, 1, 1)) / image_std.view(1, C, 1, 1)   
         states = torch.cat([states, cur_state], dim=0).float()
         timesteps = torch.cat(
             [timesteps,
@@ -322,7 +308,7 @@ def eval_episode(env, no_lang, planner, model, max_ep_len, K, words_dict, render
             break
 
     if method != 'vanilla' and model.option_selector.use_vq:
-        tokens = get_tokens(lm_input, planner.tokenizer)
+        tokens = get_tokens(lm_input, tokenizer)
         for o in options_list:
             for w in tokens:
                 words_dict[o].append(w)
@@ -351,21 +337,21 @@ def get_action(
             if method == 'option':
                 # option, option_index = model.option_selector.get_option(
                 #     cls_embeddings, states[-1].reshape(1, 1, -1), **kwargs)
-                option, option_index = model.planner.get_option(
-                    word_embeddings.mean(1, keepdim=True), states[-1].reshape(1, 1, -1), method, **kwargs)
+                option, option_index = model.option_selector.get_option(
+                    word_embeddings.mean(1, keepdim=True), states[-1].reshape(1, 1, -1), **kwargs)
             else:
-                option, option_index = model.planner.get_option(word_embeddings, states, timesteps, method, **kwargs)
+                option, option_index = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
             options_list.append(option_index.cpu().item())
 
         if t % (K - 1) == 0:
             # Reset state, actions, options and timesteps after every K steps
-            actions = torch.zeros((1, act_dim), device=device, dtype=torch.float16)
-            options = torch.zeros((1, option_dim), device=device, dtype=torch.float16)
+            actions = torch.zeros((1, act_dim), device=device, dtype=torch.float32)
+            options = torch.zeros((1, option_dim), device=device, dtype=torch.float32)
 
             if isinstance(state_dim, tuple):
-                states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float16)
+                states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
             else:
-                states = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float16)
+                states = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float32)
             timesteps = torch.ones((1, 1), device=device, dtype=torch.long) * (t + 1)
 
         options[-1] = option
@@ -373,10 +359,10 @@ def get_action(
         # TODO
         with torch.no_grad():
             action = model.get_action(
-                states.to(dtype=torch.float16),
-                actions.to(dtype=torch.float16),
-                timesteps.to(dtype=torch.float16),
-                options=options.to(dtype=torch.float16),
+                states.to(dtype=torch.float32),
+                actions.to(dtype=torch.float32),
+                timesteps.to(dtype=torch.long),
+                options=options.to(dtype=torch.float32),
                 ema_diffusion_model=ema_diffusion_model,
             )
 

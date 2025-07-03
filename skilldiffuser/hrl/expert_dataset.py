@@ -7,7 +7,7 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Dataset
 import os
-from utils import pad, calculate_state_means_stds
+from hrl.utils import pad, calculate_state_means_stds
 from tqdm import tqdm
 
 
@@ -141,6 +141,10 @@ class ExpertDataset(Dataset):
         else:
             states = self.trajectories["states"][i]
             states = np.array(states)
+            
+            assert states.shape[0] == self.max_length, \
+                f"Expected states length {self.max_length}, but got {states.shape[0]}"
+            
             if 'aug' in self.kwargs and self.kwargs['aug']:
                 states = self.aug(torch.from_numpy(states))
 
@@ -157,11 +161,11 @@ class ExpertDataset(Dataset):
             language = '' if self.no_lang else self.trajectories["language"][i]
 
             return (language,
-                    pad(states, self.max_length, axis=0),
-                    pad(self.trajectories["actions"][i], self.max_length, axis=0),
-                    pad(timesteps, self.max_length, axis=0),
-                    pad(self.trajectories["dones"][i], self.max_length, axis=0),
-                    pad(attention_mask, self.max_length, axis=0)
+                    pad(states, self.max_length, axis=0, mode='post'),
+                    pad(self.trajectories["actions"][i], self.max_length, axis=0, mode='post'),
+                    pad(timesteps, self.max_length, axis=0, mode='post'),
+                    pad(self.trajectories["dones"][i], self.max_length, axis=0, mode='post'),
+                    pad(attention_mask, self.max_length, axis=0, mode='post')
                     )
 
 

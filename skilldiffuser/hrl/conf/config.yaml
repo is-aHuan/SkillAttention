@@ -33,7 +33,7 @@ codebook_dim: 16
 
 parallel: False  # True
 savedir: 'checkpoints'
-savepath: /root/dataspace/lorel/may_08_sawyer_50k/tune/ ## to be filled in code
+savepath: /root/dataspace/lorel/may_08_sawyer_50k/ ## to be filled in code
 
 method: ## to be filled in code
 use_iq: False ## use IQ-Learn objective instead of BC
@@ -44,8 +44,7 @@ weight_decay: 1e-4
 os_learning_rate: 1e-4
 
 trainer:
-  train_device:  ## skill model train device
-  inference_device:  ## high level llm model inference device
+  device:  ## to be filled in code
   state_il: False
   num_eval_episodes: 100
   eval_every: 1

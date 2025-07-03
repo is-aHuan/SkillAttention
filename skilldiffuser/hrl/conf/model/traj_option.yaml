@@ -79,8 +79,8 @@ diffuser:
 model:
   name: traj_option
 
-  horizon: 8 # 10
-  K: 8  # 10
+  horizon: 4 # 10
+  K: 4  # 10
   train_lm: False
   use_iq: ${use_iq}
   method: ${model.name}
@@ -103,7 +103,6 @@ option_selector:
   commitment_weight: 0.25
   num_options: 20
   num_hidden: 2
-  max_length:
   option_transformer:
     hidden_size: 128
     n_layer: 1
@@ -116,7 +115,7 @@ option_selector:
     output_attention: False
 
 dt:
-    hidden_size: 3584
+    hidden_size: 128
     n_layer: 1
     n_head: 4
     option_il: False

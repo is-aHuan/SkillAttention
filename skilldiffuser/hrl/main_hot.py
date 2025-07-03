@@ -27,7 +27,7 @@ from trainer import Trainer
 from difftrainer import DiffTrainer
 import diffuser.utils as diffutils
 from omegaconf import open_dict
-from inferencer.planner import HighLevelPlanner
+from inferencer.robobrain_planner import RoboBrainPlanner
 
 def evaluate(cfg):
     # load saved arguments
@@ -42,7 +42,7 @@ def evaluate(cfg):
     device = cfg.trainer.device
 
     with open_dict(args.train_dataset):
-        args.train_dataset.expert_location = '/root/lorel/may_08_sawyer_50k/prep_data.pkl'
+        args.train_dataset.expert_location = '/root/lorel/may_08_sawyer_50k/pre_data.pkl'
         # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
         args.train_dataset.num_trajectories = 1000
     # args.train_dataset['path'] = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
@@ -67,11 +67,8 @@ def evaluate(cfg):
             # entity='language-rl'
         )
 
-    # tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
-    # num_eval_episodes = args.trainer.num_eval_episodes
-    # tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-    planner = HighLevelPlanner()
-
+    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    num_eval_episodes = args.trainer.num_eval_episodes
     print('=' * 50)
     print(f'Starting evaluation: {args.env.name}')
     print(f'{args.trainer.num_eval_episodes} trajectories')
@@ -272,7 +269,7 @@ def evaluate(cfg):
     trainer = Trainer(
         args,
         model=model,
-        planner=planner,
+        tokenizer=tokenizer,
         optimizer=None,
         train_loader=train_loader,
         env=env,
@@ -301,12 +298,8 @@ def evaluate(cfg):
         print(f'{k}: {v}')
 
 
-def train(args, world_size=None, rank=None):
-    # device = args.trainer.device
-    is_main_process = (rank == 0)
-    inference_device = torch.device(args.trainer.inference_device)
-    train_device = torch.device(f"cuda:{rank + 1}")
-    torch.cuda.set_device(train_device)
+def train(args):
+    device = args.trainer.device
 
     args.method = args.model.name
     # args.method = "option"
@@ -328,7 +321,7 @@ def train(args, world_size=None, rank=None):
     if not os.path.isdir(args.savepath):
         os.makedirs(args.savepath, exist_ok=True)
 
-    # tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 
     #K = args['K']
     batch_size = args.batch_size
@@ -387,7 +380,6 @@ def train(args, world_size=None, rank=None):
         args.option_selector.option_transformer.max_length = int(train_dataset.max_length)
         args.option_selector.option_transformer.max_ep_len = args.env.eval_episode_factor * \
             int(train_dataset.max_length)
-        args.option_selector['max_length'] = int(train_dataset.max_length)
 
     if args.model.horizon == 'max':
         args.model.horizon = int(train_dataset.max_length)
@@ -398,11 +390,6 @@ def train(args, world_size=None, rank=None):
     option_selector_args['state_dim'] = state_dim
     option_selector_args['option_dim'] = args.option_dim
     option_selector_args['codebook_dim'] = args.codebook_dim
-    
-    if is_main_process:
-        print(f"Initializing shared HighLevelPlanner on {inference_device}...")
-        planner = HighLevelPlanner(lang_dim=3584, device=inference_device, **option_selector_args)
-
     state_reconstructor_args = dict(args.state_reconstructor)
     lang_reconstructor_args = dict(args.lang_reconstructor)
     decision_args = {'state_dim': state_dim,
@@ -447,7 +434,7 @@ def train(args, world_size=None, rank=None):
             dim=args.diffuser.dim,
             condition_dropout=args.diffuser.condition_dropout,
             calc_energy=args.diffuser.calc_energy,
-            device=train_device,
+            device=device,
         )
 
         diffusion_config = diffutils.Config(
@@ -471,7 +458,7 @@ def train(args, world_size=None, rank=None):
             loss_discount=args.diffuser.loss_discount,
             returns_condition=args.diffuser.returns_condition,
             condition_guidance_w=args.diffuser.condition_guidance_w,
-            device=train_device,
+            device=device,
         )
     else:
         model_config = diffutils.Config(
@@ -487,7 +474,7 @@ def train(args, world_size=None, rank=None):
             dim=args.diffuser.dim,
             condition_dropout=args.diffuser.condition_dropout,
             calc_energy=args.diffuser.calc_energy,
-            device=train_device,
+            device=device,
         )
 
         diffusion_config = diffutils.Config(
@@ -508,7 +495,7 @@ def train(args, world_size=None, rank=None):
             loss_discount=args.diffuser.loss_discount,
             returns_condition=args.diffuser.returns_condition,
             condition_guidance_w=args.diffuser.condition_guidance_w,
-            device=train_device,
+            device=device,
         )
 
     diff_trainer_args = dict(
@@ -524,7 +511,7 @@ def train(args, world_size=None, rank=None):
         save_parallel=args.diffuser.save_parallel,
         bucket=args.diffuser.bucket,
         n_reference=args.diffuser.n_reference,
-        train_device=train_device,
+        train_device=device,
         save_checkpoints=args.diffuser.save_checkpoints,
         update_ema_every=10,
         parallel=args.parallel,
@@ -535,11 +522,10 @@ def train(args, world_size=None, rank=None):
 
     unet = model_config()
     diffusion_model = diffusion_config(unet)
-    diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args).to(torch.float16)
+    diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args)
 
     model = HRLModel(args, option_selector_args, state_reconstructor_args,
-                     lang_reconstructor_args, decision_args, planner, 
-                     diff_trainer, train_device, **hrl_model_args).to(torch.float16)
+                     lang_reconstructor_args, decision_args, iq_args, diff_trainer, device, **hrl_model_args)
 
     # # load saved arguments
     # checkpoint = torch.load(cfg.checkpoint_path)
@@ -596,15 +582,18 @@ def train(args, world_size=None, rank=None):
     # else:
     #     model = model.to(device=device)
 
+    local_rank = None
+    if 'cuda' in device and os.environ.get('LOCAL_RANK') is not None:
+        local_rank = int(os.environ.get('LOCAL_RANK'))
 
     # ... model initialization ...
-    model = model.to(train_device) # 先将模型移到指定设备
+    model = model.to(device) # 先将模型移到指定设备
 
-    if world_size > 1:
-        if is_main_process:
-            print(f"Wrapping model with DDP for training on {world_size} GPUs...")
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank + 1], output_device=rank + 1,
+    if local_rank is not None: # 使用 DDP
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank,
                                                           find_unused_parameters=True)
+    elif args.parallel and torch.cuda.device_count() > 1: # 使用 DataParallel 
+        model = torch.nn.DataParallel(model)
 
     # Setting up the optimizer
     params = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
@@ -628,12 +617,13 @@ def train(args, world_size=None, rank=None):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, adjust_lr)
     # optimizer, scheduler = None, None
 
+    planner = RoboBrainPlanner()
     trainer_args = dict(args.trainer)
-
     trainer = Trainer(
         args=args,
         model=model,
         planner=planner,
+        tokenizer=tokenizer,
         optimizer=optimizer,
         train_loader=train_loader,
         env=env,
@@ -664,59 +654,46 @@ def train(args, world_size=None, rank=None):
 #     cfg.hydra_base_dir = os.getcwd()
 #     return cfg
 
-# def get_args(cfg: DictConfig):
-#     if torch.cuda.is_available():
-#         local_rank_env = os.environ.get('LOCAL_RANK')
-#         if local_rank_env is not None:
-#             # DDP 环境：每个进程使用其指定的 GPU
-#             local_rank = int(local_rank_env)
-#             cfg.trainer.device = f"cuda:{local_rank}"
-#             print(f"Multi-GPU (DDP): Process using device cuda:{local_rank}")
-#         else:
-#             # 单 GPU 或 DataParallel (使用 cuda:0 作为主设备)
-#             cfg.trainer.device = "cuda:0"
-#             if torch.cuda.device_count() > 1:
-#                 print(f"Multi-GPU (DataParallel): Using cuda:0 as primary. Found {torch.cuda.device_count()} GPUs.")
-#             else:
-#                 print("Single GPU: Using cuda:0.")
-#     else:
-#         cfg.trainer.device = "cpu"
-#         print("CPU: No CUDA GPUs available.")
-#     cfg.hydra_base_dir = os.getcwd()
-#     # tmp_path = os.path.split(cfg.hydra_base_dir)
-#     return cfg
-
 def get_args(cfg: DictConfig):
     if torch.cuda.is_available():
-        world_size = int(os.environ.get('WORLD_SIZE', 1))
-        rank = int(os.environ.get('RANK', 0))
-        cfg.trainer.train_device = f"cuda:{rank + 1}"
-        cfg.trainer.inference_device = "cuda:0"
+        local_rank_env = os.environ.get('LOCAL_RANK')
+        if local_rank_env is not None:
+            # DDP 环境：每个进程使用其指定的 GPU
+            local_rank = int(local_rank_env)
+            cfg.trainer.device = f"cuda:{local_rank}"
+            print(f"Multi-GPU (DDP): Process using device cuda:{local_rank}")
+        else:
+            # 单 GPU 或 DataParallel (使用 cuda:0 作为主设备)
+            cfg.trainer.device = "cuda:0"
+            if torch.cuda.device_count() > 1:
+                print(f"Multi-GPU (DataParallel): Using cuda:0 as primary. Found {torch.cuda.device_count()} GPUs.")
+            else:
+                print("Single GPU: Using cuda:0.")
     else:
         cfg.trainer.device = "cpu"
         print("CPU: No CUDA GPUs available.")
-        world_size, rank = None, None
     cfg.hydra_base_dir = os.getcwd()
     # tmp_path = os.path.split(cfg.hydra_base_dir)
-    return cfg, world_size, rank
+    return cfg
 
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.1")
 def main(cfg: DictConfig):
-    args, world_size, rank = get_args(cfg)
+    args = get_args(cfg)
 
     # set seeds
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    if 'cuda' in args.trainer.train_device and os.environ.get('LOCAL_RANK') is not None:
-        torch.distributed.init_process_group(backend='nccl', world_size=world_size, rank=rank)
+    if 'cuda' in args.trainer.device and os.environ.get('LOCAL_RANK') is not None:
+        torch.distributed.init_process_group(backend='nccl')
 
-    if 'cuda' in args.trainer.train_device and torch.cuda.is_available() and args.cuda_deterministic:
+    device = torch.device(args.trainer.device)
+    if device.type == 'cuda' and torch.cuda.is_available() and args.cuda_deterministic:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-    elif 'cuda' in args.trainer.train_device and torch.cuda.is_available():
+    elif device.type == 'cuda' and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
     print("--> Running in ", os.getcwd())
@@ -727,11 +704,9 @@ def main(cfg: DictConfig):
 
     # train
     print(OmegaConf.to_yaml(cfg))
-    train(args, world_size, rank)
+    train(args)
 
 
 if __name__ == "__main__":
     # os.environ["CUDA_VISIBLE_DEVICES"]="4"
     main()
-    # planner = HighLevelPlanner(model_id="BAAI/RoboBrain")
-
