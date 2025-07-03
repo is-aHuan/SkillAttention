@@ -68,7 +68,7 @@ class HRLModel(nn.Module, IQMixin):
         #     # initialize iq mixins
         #     IQMixin.__init__(self, self.decision_transformer, iq_args, device)
 
-    def forward(self, lm_input_ids, lm_attention_mask, sub_lm_input_ids, sub_lm_attention_mask,
+    def forward(self, lm_input_ids, lm_attention_mask, 
                 states, actions, timesteps, iter_num, ind, diff_train_num, attention_mask=None):
         # pdb.set_trace()
         batch_size, traj_len = states.shape[0], states.shape[1]
@@ -76,25 +76,25 @@ class HRLModel(nn.Module, IQMixin):
             with torch.no_grad():
                 # (batch_size,num_embeddings,embedding_size)
                 lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
-                sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
+                # sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
         else:
             # (batch_size,num_embeddings,embedding_size)
             lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
-            sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
+            # sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
         cls_embeddings = lm_embeddings[:, 0, :].unsqueeze_(1)
         # word_embeddings = lm_embeddings[:, 1:-1, :]      # We skip the CLS and SEP tokens. I know there's padding here but we at least always remove the CLS
         word_embeddings = lm_embeddings[:, 1:, :]      # We skip the CLS tokens 
 
-        sub_cls_embeddings = sub_lm_embeddings[:, 0, :].unsqueeze_(1)
-        sub_word_embeddings = sub_lm_embeddings[:, 1:, :]  # We skip the CLS tokens
+        # sub_cls_embeddings = sub_lm_embeddings[:, 0, :].unsqueeze_(1)
+        # sub_word_embeddings = sub_lm_embeddings[:, 1:, :]  # We skip the CLS tokens
 
-        # TODO: lm_embeddings + sub_lm_embeddings ??
-        if False:
-            word_embeddings = self.layer_norm(word_embeddings.broadcast_to(sub_word_embeddings.shape) + sub_word_embeddings)
-            cls_embeddings = self.layer_norm(cls_embeddings.broadcast_to(sub_cls_embeddings.shape) + sub_cls_embeddings)
-        else:
-            world_embeddings = sub_word_embeddings
-            cls_embeddings = sub_cls_embeddings
+        # # TODO: lm_embeddings + sub_lm_embeddings ??
+        # if False:
+        #     word_embeddings = self.layer_norm(word_embeddings.broadcast_to(sub_word_embeddings.shape) + sub_word_embeddings)
+        #     cls_embeddings = self.layer_norm(cls_embeddings.broadcast_to(sub_cls_embeddings.shape) + sub_cls_embeddings)
+        # else:
+        #     world_embeddings = sub_word_embeddings
+        #     cls_embeddings = sub_cls_embeddings
 
         entropy = None
         if self.method == 'vanilla':
@@ -114,21 +114,21 @@ class HRLModel(nn.Module, IQMixin):
             # we change options only every H states. Say this leads to N states
             # N selected options
             # B, max_length // H, option_dim
-            # if self.method == 'option':
-            #     # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
-            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-            #         word_embeddings.mean(1, keepdim=True), states)
-            # else:
-            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-            #         word_embeddings, states, timesteps, attention_mask)
-                
             if self.method == 'option':
                 # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
                 selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-                    sub_word_embeddings.mean(1, keepdim=True), states)
+                    word_embeddings.mean(1, keepdim=True), states)
             else:
                 selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-                    sub_word_embeddings, states, timesteps, attention_mask)
+                    word_embeddings, states, timesteps, attention_mask)
+                
+            # if self.method == 'option':
+            #     # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
+            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+            #         sub_word_embeddings.mean(1, keepdim=True), states)
+            # else:
+            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+            #         sub_word_embeddings, states, timesteps, attention_mask)
 
             # # need to make options same length as states and actions
             options = torch.zeros((batch_size, traj_len, selected_options.shape[-1])).to(selected_options.device)

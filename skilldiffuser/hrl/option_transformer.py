@@ -60,7 +60,7 @@ class OptionTransformer(nn.Module):
         self.embed_ln = nn.LayerNorm(hidden_size)
         self.predict_options = torch.nn.Linear(hidden_size, self.option_dim)
 
-    def forward(self, word_embeddings, states, timesteps, attention_mask, **kwargs):
+    def forward(self, word_embeddings, states, timesteps, attention_mask, option_hidden_states, **kwargs):
         batch_size, seq_length = states.shape[0], states.shape[1]
         num_tokens = word_embeddings.shape[1]
 
@@ -83,21 +83,23 @@ class OptionTransformer(nn.Module):
         lang_attn_mask = torch.cat([torch.ones((batch_size, num_tokens), device=states.device), attention_mask], dim=1)
 
         # we feed in the input embeddings (not word indices as in NLP) to the model
+        option_hidden_states = option_hidden_states.view(1, *option_hidden_states.shape)
         transformer_outputs = self.transformer(
             inputs_embeds=stacked_inputs,
             attention_mask=lang_attn_mask,
+            encoder_hidden_states=option_hidden_states,
         )
 
         x = transformer_outputs['last_hidden_state']
         lang_out = x[:, :num_tokens, :].reshape(batch_size, num_tokens, self.hidden_size)
-        traj_out = x[:, num_tokens:, :].reshape(batch_size, seq_length, self.hidden_size)
+        traj_out = x[:, num_tokens:, :].reshape(batch_size, seq_length, self.hidden_size)           
 
         # get predictions
         # predict option logits given state
         option_preds = self.predict_options(traj_out)
 
         if self.output_attentions:
-            attentions = transformer_outputs[-1]
-            return option_preds, attentions, ret_state_embeddings
+            cross_attentions = transformer_outputs['cross_attentions'][-1]
+            return option_preds, cross_attentions, ret_state_embeddings
 
         return option_preds, None, ret_state_embeddings

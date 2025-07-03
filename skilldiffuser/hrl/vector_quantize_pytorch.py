@@ -165,7 +165,7 @@ class EuclideanCodebook(nn.Module):
         batch_samples = rearrange(batch_samples, '... d -> (...) d')
         self.replace(batch_samples, mask=expired_codes)
 
-    def forward(self, x):
+    def forward(self, x, soft_counts=None):
         shape, dtype = x.shape, x.dtype
         flatten = rearrange(x, '... d -> (...) d')
         embed = self.embed.t()
@@ -184,7 +184,12 @@ class EuclideanCodebook(nn.Module):
         quantize = F.embedding(embed_ind, self.embed)
 
         if self.training:
-            ema_inplace(self.cluster_size, embed_onehot.sum(0), self.decay)
+            if soft_counts is not None:
+                batch_usage_counts = soft_counts
+            else:
+                batch_usage_counts = embed_onehot.sum(0)
+
+            ema_inplace(self.cluster_size, batch_usage_counts, self.decay)
             embed_sum = flatten.t() @ embed_onehot
             ema_inplace(self.embed_avg, embed_sum.t(), self.decay)
             cluster_size = laplace_smoothing(self.cluster_size, self.codebook_size, self.eps) * self.cluster_size.sum()
@@ -356,7 +361,7 @@ class VectorQuantize(nn.Module):
     def codebook(self):
         return self._codebook.embed
 
-    def forward(self, x):
+    def forward(self, x, soft_counts=None):
         shape, device, codebook_size = x.shape, x.device, self.codebook_size
 
         need_transpose = not self.channel_last and not self.accept_image_fmap
@@ -373,7 +378,7 @@ class VectorQuantize(nn.Module):
         context = null_context() if not self.quantize_full_precision else autocast(enabled=False)
 
         with context:
-            quantize, embed_ind, dist = self._codebook(x)
+            quantize, embed_ind, dist = self._codebook(x, soft_counts=soft_counts)
 
         if self.training:
             quantize = x + (quantize - x).detach()

@@ -79,8 +79,8 @@ diffuser:
 model:
   name: traj_option
 
-  horizon: 4 # 10
-  K: 4  # 10
+  horizon: 8 # 10
+  K: 8  # 10
   train_lm: False
   use_iq: ${use_iq}
   method: ${model.name}

@@ -75,7 +75,7 @@ class Trainer:
         # self.model.train()
         
         ind = 0
-        for langs, subtask_instructions, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
+        for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
             # subtask_list = []
             # for i in range(len(langs)):
             #     task = langs[i]
@@ -102,11 +102,11 @@ class Trainer:
                 dones = pad(dones, padded_length)
                 attention_mask = pad(attention_mask, padded_length)
 
-            states = states.reshape(B*num_seq, -1, *states.shape[2:])
-            actions = actions.reshape(B*num_seq, -1, *actions.shape[2:])
-            timesteps = timesteps.reshape(B*num_seq, -1)
-            dones = dones.reshape(B*num_seq, -1)
-            attention_mask = attention_mask.reshape(B*num_seq, -1)
+            # states = states.reshape(B*num_seq, -1, *states.shape[2:])
+            # actions = actions.reshape(B*num_seq, -1, *actions.shape[2:])
+            # timesteps = timesteps.reshape(B*num_seq, -1)
+            # dones = dones.reshape(B*num_seq, -1)
+            # attention_mask = attention_mask.reshape(B*num_seq, -1)
         
             action_target = torch.clone(actions).detach()
             state_target = torch.clone(states).detach()
@@ -132,15 +132,15 @@ class Trainer:
             #     lm_input = self.tokenizer(text=langs_input, add_special_tokens=True,
             #                               return_tensors='pt', padding=True).to(self.device)
             
-            sub_langs_input = [subtask_instructions[i][j] for i in range(B) for j in range(len(subtask_instructions[i]))]
-            sub_lm_input = self.tokenizer(text=sub_langs_input, add_special_tokens=True,
-                                      return_tensors='pt', padding=True).to(self.device)
+            # sub_langs_input = [subtask_instructions[i][j] for i in range(B) for j in range(len(subtask_instructions[i]))]
+            # sub_lm_input = self.tokenizer(text=sub_langs_input, add_special_tokens=True,
+            #                           return_tensors='pt', padding=True).to(self.device)
         
             # TODO: Pay attention here!
             num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)
             diff_train_num = max(num_diff_steps // len(self.train_loader), 1)
             outputs = self.model(lm_input['input_ids'], lm_input['attention_mask'],
-                                 sub_lm_input['input_ids'], sub_lm_input['attention_mask'],
+                                #  sub_lm_input['input_ids'], sub_lm_input['attention_mask'],
                                  states, actions, timesteps, iter_num=iter_num, ind=ind,
                                  diff_train_num=diff_train_num, attention_mask=attention_mask,)
         

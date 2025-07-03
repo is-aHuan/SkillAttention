@@ -29,7 +29,7 @@ decay_steps: 100000
 
 # options config
 option_dim: 128
-codebook_dim: 16
+codebook_dim: 128
 
 parallel: False  # True
 savedir: 'checkpoints'

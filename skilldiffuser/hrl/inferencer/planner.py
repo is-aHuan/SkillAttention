@@ -1,5 +1,5 @@
 import re
-from hrl.inferencer import SimpleInference
+from inferencer import SimpleInference
 
 class HighLevelPlanner:
     """

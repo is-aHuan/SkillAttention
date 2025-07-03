@@ -69,7 +69,8 @@ class OptionSelector(nn.Module):
                                        'n_positions': option_transformer.n_positions,
                                        'resid_pdrop': option_transformer.dropout,
                                        'attn_pdrop': option_transformer.dropout,
-                                       'output_attentions': True  # option_transformer.output_attention,
+                                       'output_attentions': True,  # option_transformer.output_attention,
+                                       'add_cross_attention': True,
                                        }
             self.option_dt = OptionTransformer(**option_transformer_args)
         else:
@@ -96,9 +97,11 @@ class OptionSelector(nn.Module):
             self.embed_lang = nn.Linear(lang_dim, hidden_size)
 
     def forward(self, word_embeddings, states, timesteps=None, attention_mask=None, **kwargs):
+        option_attentions = None
         if self.method == 'traj_option':
-            dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask)
+            dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
             option_preds = dt_ret[0]
+            option_attentions = dt_ret[1]
             state_embeddings = dt_ret[2]
             option_preds = option_preds[:, ::self.horizon, :]
         else:
@@ -113,14 +116,48 @@ class OptionSelector(nn.Module):
 
             state_embeddings = ret_state_embeddings
 
+        # if self.use_vq:
+        #     options, indices, commitment_loss = self.Z(option_preds)
+        #     entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
+        # else:
+        #     # TODO: For now simply return the first dim of option
+        #     options, indices = option_preds, option_preds[:, :, 0]
+        #     commitment_loss = None
+        #     entropies = None
+
         if self.use_vq:
-            options, indices, commitment_loss = self.Z(option_preds)
-            entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
+            marginal_entropy, cond_entropy = None, None
+            if option_attentions is not None:
+                #shape: [batch_size, num_heads, query_len, key_len]
+                num_tokens = word_embeddings.shape[1]  # number of tokens in the input sequence
+                traj_attentions = option_attentions[:, :, num_tokens:, :]
+                mean_head_attentions = traj_attentions.mean(dim=1)  # average over heads
+                traj_attentions = mean_head_attentions[:, ::self.horizon, :]  # shape: [batch_size, seq_len // horizon, codebook_size]
+
+                # shape: [codebook_size]
+                soft_counts = traj_attentions.sum(dim=(0, 1))  
+                num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
+
+                current_soft_sum = soft_counts.sum()
+                if current_soft_sum > 1e-9: # 避免除以零
+                    scale_factor = num_samples / current_soft_sum
+                    soft_counts = soft_counts * scale_factor
+
+                cond_probs = traj_attentions + 1e-9
+                probs = cond_probs.mean(dim=(0, 1))
+                marginal_entropy = (-torch.log2(probs) * probs).sum()
+                cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
+
+            _, indices, commitment_loss = self.Z(option_preds)
+            # entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
+            options = option_preds
+            entropies = (marginal_entropy, cond_entropy)
         else:
             # TODO: For now simply return the first dim of option
             options, indices = option_preds, option_preds[:, :, 0]
             commitment_loss = None
             entropies = None
+
         return options, indices, commitment_loss, entropies, state_embeddings
 
     def get_option(self, word_embeddings, states, timesteps=None, **kwargs):
