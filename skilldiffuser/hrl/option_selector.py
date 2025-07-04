@@ -19,8 +19,8 @@ class OptionSelector(nn.Module):
 
     def __init__(
             self, state_dim, num_options, option_dim, lang_dim, horizon, num_hidden=None, hidden_size=None,
-            method='traj_option', option_transformer=None, codebook_dim=16, use_vq=True, kmeans_init=False,
-            commitment_weight=0.25, **kwargs):
+            method='traj_option', option_transformer=None, codebook_dim=16, use_vq=True, kmeans_init=True,
+            commitment_weight=0, **kwargs):
 
         # option_dim and codebook_dim are different because of the way the VQ package is designed
         # if they are different, then there is a projection operation that happens inside the VQ layer
@@ -52,7 +52,8 @@ class OptionSelector(nn.Module):
             kmeans_init=kmeans_init,   # use kmeans init
             cpc=False,
             # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
-            use_cosine_sim=False   # l2 normalize the codes
+            use_cosine_sim=False,   # l2 normalize the codes
+            # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
         )
 
         if self.method == 'traj_option':
@@ -125,6 +126,7 @@ class OptionSelector(nn.Module):
         #     commitment_loss = None
         #     entropies = None
 
+        attention_temperature = 0.01
         if self.use_vq:
             marginal_entropy, cond_entropy = None, None
             if option_attentions is not None:
@@ -133,22 +135,24 @@ class OptionSelector(nn.Module):
                 traj_attentions = option_attentions[:, :, num_tokens:, :]
                 mean_head_attentions = traj_attentions.mean(dim=1)  # average over heads
                 traj_attentions = mean_head_attentions[:, ::self.horizon, :]  # shape: [batch_size, seq_len // horizon, codebook_size]
+                
+                mean = traj_attentions.mean(dim=-1, keepdim=True)  # shape: [batch_size, seq_len // horizon, 1]
+                std = traj_attentions.std(dim=-1, keepdim=True) 
+                traj_attentions = (traj_attentions - mean) / (std + 1e-6)  # normalize the attention scores
+
+                traj_attentions = F.softmax(
+                    traj_attentions / attention_temperature, dim=-1)  # apply softmax to get
 
                 # shape: [codebook_size]
                 soft_counts = traj_attentions.sum(dim=(0, 1))  
-                num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
-
-                current_soft_sum = soft_counts.sum()
-                if current_soft_sum > 1e-9: # 避免除以零
-                    scale_factor = num_samples / current_soft_sum
-                    soft_counts = soft_counts * scale_factor
+                # num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
 
                 cond_probs = traj_attentions + 1e-9
                 probs = cond_probs.mean(dim=(0, 1))
                 marginal_entropy = (-torch.log2(probs) * probs).sum()
                 cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
 
-            _, indices, commitment_loss = self.Z(option_preds)
+            _, indices, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
             # entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
             options = option_preds
             entropies = (marginal_entropy, cond_entropy)

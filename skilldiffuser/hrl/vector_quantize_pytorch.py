@@ -27,6 +27,16 @@ def l2norm(t):
 def ema_inplace(moving_avg, new, decay):
     moving_avg.data.mul_(decay).add_(new, alpha=(1 - decay))
 
+def orthogonal_ema_inplace(matrix, decay):
+    # C = U * S * V.T  => C_ortho = U * V.T
+    u, _, vh = torch.linalg.svd(matrix, full_matrices=False)
+    # v = vh.mH # vh is V.T, so v is V.T.T = V. For real matrices, .mH is .T
+    # v_t = v.transpose(-2, -1)
+    orthogonal_target = u @ vh
+
+    update_direction = orthogonal_target - matrix
+    matrix.data.add_(update_direction, alpha=(1 - decay))
+
 
 def laplace_smoothing(x, n_categories, eps=1e-5):
     return (x + eps) / (x.sum() + n_categories * eps)
@@ -192,9 +202,13 @@ class EuclideanCodebook(nn.Module):
             ema_inplace(self.cluster_size, batch_usage_counts, self.decay)
             embed_sum = flatten.t() @ embed_onehot
             ema_inplace(self.embed_avg, embed_sum.t(), self.decay)
+            orthogonal_ema_inplace(self.embed_avg, self.decay)
+
             cluster_size = laplace_smoothing(self.cluster_size, self.codebook_size, self.eps) * self.cluster_size.sum()
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(1)
             self.embed.data.copy_(embed_normalized)
+
+            # orthogonal_ema_inplace(self.embed, self.decay)
             self.expire_codes_(x)
 
         return quantize, embed_ind, dist

@@ -58,6 +58,7 @@ class OptionTransformer(nn.Module):
         self.embed_timestep = nn.Embedding(max_ep_len, hidden_size)
 
         self.embed_ln = nn.LayerNorm(hidden_size)
+        self.vq_codebook_ln = nn.LayerNorm(hidden_size)
         self.predict_options = torch.nn.Linear(hidden_size, self.option_dim)
 
     def forward(self, word_embeddings, states, timesteps, attention_mask, option_hidden_states, **kwargs):
@@ -83,7 +84,7 @@ class OptionTransformer(nn.Module):
         lang_attn_mask = torch.cat([torch.ones((batch_size, num_tokens), device=states.device), attention_mask], dim=1)
 
         # we feed in the input embeddings (not word indices as in NLP) to the model
-        option_hidden_states = option_hidden_states.view(1, *option_hidden_states.shape)
+        option_hidden_states = self.vq_codebook_ln(option_hidden_states.view(1, *option_hidden_states.shape))
         transformer_outputs = self.transformer(
             inputs_embeds=stacked_inputs,
             attention_mask=lang_attn_mask,
