@@ -15,18 +15,18 @@ from einops import rearrange, repeat
 import math
 
 # We addded these instructions
-LORL_COMPOSITION_INSTRS = ['open drawer and move black mug right',
-                           'pull the handle and move black mug down',
-                           'move white mug right',
-                           'move black mug down',
-                           'close drawer and turn faucet right',
-                           'close drawer and turn faucet left',
-                           'turn faucet left and move white mug down',
-                           'turn faucet right and close drawer',
-                           'move white mug down and turn faucet left',
-                           'close the drawer, turn the faucet left and move black mug right',
-                           'open drawer and turn faucet counterclockwise',
-                           'slide the drawer closed and then shift white mug down']
+LORL_COMPOSITION_INSTRS = ['open drawer and move black mug right',]
+                        #    'pull the handle and move black mug down',
+                        #    'move white mug right',
+                        #    'move black mug down',
+                        #    'close drawer and turn faucet right',
+                        #    'close drawer and turn faucet left',
+                        #    'turn faucet left and move white mug down',
+                        #    'turn faucet right and close drawer',
+                        #    'move white mug down and turn faucet left',
+                        #    'close the drawer, turn the faucet left and move black mug right',
+                        #    'open drawer and turn faucet counterclockwise',
+                        #    'slide the drawer closed and then shift white mug down']
 
 LORL_EVAL_INSTRS = {
     # From the paper

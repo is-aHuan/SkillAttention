@@ -31,7 +31,8 @@ from inferencer.robobrain_planner import RoboBrainPlanner
 
 def evaluate(cfg):
     # load saved arguments
-    checkpoint = torch.load(cfg.checkpoint_path)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    checkpoint = torch.load(cfg.checkpoint_path, map_location=device)
     args = checkpoint['config']
     max_length = checkpoint['train_dataset_max_length']
     args.eval = cfg.eval
@@ -45,6 +46,7 @@ def evaluate(cfg):
         args.train_dataset.expert_location = '/root/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
         # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
         args.train_dataset.num_trajectories = 1000
+        # args.trainer.num_eval_episodes = 1
     # args.train_dataset['path'] = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
     # args.train_dataset['num_trajectories'] = 1000
 
@@ -259,7 +261,7 @@ def evaluate(cfg):
         'train_dataset_max_length'], f"Expected max length of dataset to be {train_dataset.max_length} but got {checkpoint['train_dataset_max_length']}"
 
     if ".pt" in args.diffuser.loadpath:
-        model.diff_trainer.load(args.diffuser.loadpath)
+        model.diff_trainer.load(args.diffuser.loadpath, device)
 
     print(model)
     model = model.to(device=device)

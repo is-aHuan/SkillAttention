@@ -155,9 +155,11 @@ class OptionSelector(nn.Module):
                 # marginal_entropy = (-torch.log2(probs) * probs).sum()
                 # cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
 
-            _, indices, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
+            _, _, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
             entropies = entropy(self.Z.codebook, None, self.Z.project_in(option_preds))
             options = option_preds
+
+            indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)
         else:
             # TODO: For now simply return the first dim of option
@@ -205,4 +207,5 @@ class OptionSelector(nn.Module):
             options, option_indx, _, _, _ = self.forward(
                 word_embeddings, states, None, attention_mask=None, **kwargs)
 
-        return options[0, -1], option_indx[0, -1]
+        # return options[0, -1], option_indx[0, -1]
+        return options[0, -1], option_indx[-1]

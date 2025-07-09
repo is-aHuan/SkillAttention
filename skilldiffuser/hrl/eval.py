@@ -309,9 +309,15 @@ def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, rend
 
     if method != 'vanilla' and model.option_selector.use_vq:
         tokens = get_tokens(lm_input, tokenizer)
-        for o in options_list:
-            for w in tokens:
-                words_dict[o].append(w)
+        # for o in options_list:
+        #     for w in tokens:
+        #         words_dict[o].append(w)
+
+        for scores in options_list:
+            for i in range(len(scores)):
+                for w in tokens:
+                    words_dict[i].append({w: scores[i].item()})
+
 
     return episode_return, episode_length, success, options_list, lang, images, words_dict
 
@@ -341,7 +347,7 @@ def get_action(
                     word_embeddings.mean(1, keepdim=True), states[-1].reshape(1, 1, -1), **kwargs)
             else:
                 option, option_index = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
-            options_list.append(option_index.cpu().item())
+            options_list.append(option_index.cpu())
 
         if t % (K - 1) == 0:
             # Reset state, actions, options and timesteps after every K steps
@@ -369,10 +375,10 @@ def get_action(
         return action, option, states, actions, timesteps, options
 
 
-# def get_action_parallel(
-#         model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state, option, t,
-#         horizon, K, method, state_dim, act_dim, option_dim, device):
-#     pass
+def get_action_parallel(
+        model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state, option, t,
+        horizon, K, method, state_dim, act_dim, option_dim, device):
+    pass
 
 
 # if __name__ == '__main__':
