@@ -42,7 +42,7 @@ def evaluate(cfg):
     device = cfg.trainer.device
 
     with open_dict(args.train_dataset):
-        args.train_dataset.expert_location = '/root/lorel/may_08_sawyer_50k/pre_data.pkl'
+        args.train_dataset.expert_location = '/root/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
         # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
         args.train_dataset.num_trajectories = 1000
     # args.train_dataset['path'] = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
@@ -300,12 +300,8 @@ def evaluate(cfg):
 
 def train(args):
     device = args.trainer.device
-
     args.method = args.model.name
-    # args.method = "option"
-    # args.model.name = "option"
     exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
-    # time_zone = pytz.timezone('Asia/Shanghai')
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
     if args.wandb:
@@ -617,12 +613,11 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, adjust_lr)
     # optimizer, scheduler = None, None
 
-    planner = RoboBrainPlanner()
+    # planner = RoboBrainPlanner()
     trainer_args = dict(args.trainer)
     trainer = Trainer(
         args=args,
         model=model,
-        planner=planner,
         tokenizer=tokenizer,
         optimizer=optimizer,
         train_loader=train_loader,

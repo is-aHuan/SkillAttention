@@ -197,10 +197,10 @@ class EuclideanCodebook(nn.Module):
             if soft_counts is not None:
                 batch_usage_counts = soft_counts
             else:
-                batch_usage_counts = embed_onehot.sum(0)
+                batch_usage_counts = embed_onehot
 
-            ema_inplace(self.cluster_size, batch_usage_counts, self.decay)
-            embed_sum = flatten.t() @ embed_onehot
+            ema_inplace(self.cluster_size, batch_usage_counts.sum(0), self.decay)
+            embed_sum = flatten.t() @ batch_usage_counts
             ema_inplace(self.embed_avg, embed_sum.t(), self.decay)
             orthogonal_ema_inplace(self.embed_avg, self.decay)
 
