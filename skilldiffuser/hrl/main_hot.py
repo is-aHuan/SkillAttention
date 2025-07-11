@@ -261,16 +261,18 @@ def evaluate(cfg):
         'train_dataset_max_length'], f"Expected max length of dataset to be {train_dataset.max_length} but got {checkpoint['train_dataset_max_length']}"
 
     if ".pt" in args.diffuser.loadpath:
-        model.diff_trainer.load(args.diffuser.loadpath, device)
+        model.diff_trainer.load(args.diffuser.loadpath, device=device)
 
     print(model)
     model = model.to(device=device)
 
     trainer_args = dict(args.trainer)
 
+    planner = RoboBrainPlanner()
     trainer = Trainer(
         args,
         model=model,
+        planner=planner,
         tokenizer=tokenizer,
         optimizer=None,
         train_loader=train_loader,
@@ -615,11 +617,12 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, adjust_lr)
     # optimizer, scheduler = None, None
 
-    # planner = RoboBrainPlanner()
+    planner = RoboBrainPlanner()
     trainer_args = dict(args.trainer)
     trainer = Trainer(
         args=args,
         model=model,
+        planner=planner,
         tokenizer=tokenizer,
         optimizer=optimizer,
         train_loader=train_loader,

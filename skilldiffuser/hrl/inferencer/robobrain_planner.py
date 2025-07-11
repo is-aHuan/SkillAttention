@@ -24,7 +24,6 @@ class RoboBrainPlanner(nn.Module):
             f"Given the objects in the image, if you are required to complete the task \"{task}\", "
             "what is your detailed plan“? Write your plan and explain it in detail, using the following format: "
             "Step_1: xxx\nStep_2: xxx\n ...\nStep_n: xxx\n"
-            "However, the task can only be decomposed into a maximum of five steps."
         )   
         # prompt = """Given the obiects in the image, 
         #     if you are required to complete the task \"Put the apple in the basket\", 

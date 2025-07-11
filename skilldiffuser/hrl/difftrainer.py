@@ -132,6 +132,7 @@ class DiffTrainer(nn.Module):
         '''
         # loadpath = os.path.join(self.bucket, logger.prefix, f'checkpoint/state.pt')
         # data = logger.load_torch(loadpath)
+        # data = torch.load(loadpath, map_location=device)
         data = torch.load(loadpath, map_location=device)
 
         # self.step = data['step']
