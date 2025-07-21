@@ -14,7 +14,7 @@ import wandb
 
 from env import BaseWrapper, LorlWrapper, BabyAIWrapper
 from eval import eval_episode
-from utils import pad, LORL_EVAL_INSTRS, LORL_COMPOSITION_INSTRS
+from utils import pad, LORL_EVAL_INSTRS, LORL_COMPOSITION_INSTRS, LORL_SINGLE_INSTRS
 from viz import get_tokens, viz_matrix, plot_hist, viz_matrix2
 
 
@@ -294,7 +294,7 @@ class Trainer:
 
         return logs
 
-    def evaluate(self, iter_num, render=False, max_ep_len=500, render_path='./renders', render_freq=1, lorl_compose=True):
+    def evaluate(self, iter_num, render=False, max_ep_len=500, render_path='./renders', render_freq=1, lorl_compose=True, lorl_single=False):
         model = self.model
 
         if hasattr(self.model, 'module'):
@@ -351,7 +351,7 @@ class Trainer:
                 f'length_std': np.std(lengths),
                 f'success_rate': np.mean(successes),
             }
-        elif self.env and 'Lorl' in self.env.unwrapped.spec.id and lorl_compose:
+        elif self.env and 'Lorl' in self.env.unwrapped.spec.id and lorl_compose and not lorl_single:
             print("Compose")
             # For Lorl env
             # Most of this code is from https://github.com/suraj-nair-1/lorel/blob/main/run_planning.py
@@ -359,7 +359,7 @@ class Trainer:
             # setting this to be sufficiently large
             # max_ep_len = self.eval_episode_factor * self.train_loader.dataset.max_length
             # max_ep_len = self.train_loader.dataset.max_length
-            max_ep_len = 50
+            max_ep_len = 80
 
             if render:
                 if not os.path.isdir(render_path):
@@ -413,7 +413,52 @@ class Trainer:
                 f'instr_wise': plot_hist(instr_wise_stats),}
                 # f'rephrasal_wise': plot_hist(rephrasal_wise_stats)}
 
-        elif self.env and 'Lorl' in self.env.unwrapped.spec.id and not lorl_compose:
+        elif self.env and 'Lorl' in self.env.unwrapped.spec.id and not lorl_compose and lorl_single:
+            print('Single')
+            max_ep_len = 20
+
+            if render:
+                if not os.path.isdir(render_path):
+                    os.makedirs(render_path, exist_ok=True)
+
+            lengths, dists, successes = [], [], []
+            instr_wise_stats = {k: [] for k in LORL_SINGLE_INSTRS}
+
+            for i in tqdm(range(1, self.num_eval_episodes+1)):
+                for instr in LORL_SINGLE_INSTRS:
+                    env = LorlWrapper(self.env, self.train_loader.dataset,
+                                      instr=instr, orig_instr=instr)
+                    with torch.no_grad():
+                        episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
+                            env, no_lang, self.tokenizer, model, self.planner, max_ep_len, self.K, words_dict, render, device,
+                            render_path=render_path, ema_diffusion_model=ema_diffusion_model,
+                            render_freq=render_freq, iter_num=iter_num, i=i)
+
+                    if render and i % render_freq == 0:
+                        r = f'{iter_num}_{i}'
+                        imageio.mimsave(f'{render_path}/episode_{r}_{instr}.gif', images)
+                        print(options_list)
+                        print(f'Success: {success}')
+
+                        with open(f'{render_path}/episode_{r}_{instr}_options.txt', 'w') as fp:
+                            fp.write(str(options_list))
+
+                    dists.append(episode_return)
+                    lengths.append(episode_length)
+                    successes.append(success)
+                    instr_wise_stats[instr].append(success)
+
+            instr_wise_stats = {k: np.mean(instr_wise_stats[k]) for k in instr_wise_stats.keys()}
+
+            metrics = {
+                f'length_mean': np.mean(lengths),
+                f'dist_mean': np.mean(dists),
+                f'length_std': np.std(lengths),
+                f'dist_std': np.std(dists),
+                f'success_rate': np.mean(successes),
+                f'instr_wise': plot_hist(instr_wise_stats),}
+
+        elif self.env and 'Lorl' in self.env.unwrapped.spec.id and not lorl_compose and not lorl_single:
             # For Lorl env
             # Most of this code is from https://github.com/suraj-nair-1/lorel/blob/main/run_planning.py
             use_state = self.train_loader.dataset.kwargs['use_state']

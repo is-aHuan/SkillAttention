@@ -51,7 +51,7 @@ class OptionSelector(nn.Module):
             commitment_weight=commitment_weight,   # the weight on the commitment loss
             kmeans_init=kmeans_init,   # use kmeans init
             cpc=False,
-            threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
+            # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
             use_cosine_sim=False,   # l2 normalize the codes
             # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
         )
@@ -102,7 +102,7 @@ class OptionSelector(nn.Module):
         if self.method == 'traj_option':
             dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
             option_preds = dt_ret[0]
-            option_attentions = dt_ret[1]
+            # option_attentions = dt_ret[1]
             state_embeddings = dt_ret[2]
             option_preds = option_preds[:, ::self.horizon, :]
         else:
@@ -126,40 +126,42 @@ class OptionSelector(nn.Module):
         #     commitment_loss = None
         #     entropies = None
 
-        attention_temperature = 0.01
+        # attention_temperature = 0.01
         if self.use_vq:
-            # marginal_entropy, cond_entropy = None, None
-            if option_attentions is not None:
-                #shape: [batch_size, num_heads, query_len, key_len]
-                num_tokens = word_embeddings.shape[1]  # number of tokens in the input sequence
-                traj_attentions = option_attentions[:, :, num_tokens:, :]
+            # # marginal_entropy, cond_entropy = None, None
+            # if option_attentions is not None:
+            #     #shape: [batch_size, num_heads, query_len, key_len]
+            #     num_tokens = word_embeddings.shape[1]  # number of tokens in the input sequence
+            #     traj_attentions = option_attentions[:, :, num_tokens:, :]
 
-                # traj_attentions = traj_attentions.mean(dim=1)  # average over heads
-                traj_attentions = traj_attentions.sum(dim=1)  # sum over heads
-                traj_attentions = traj_attentions[:, ::self.horizon, :]  # shape: [batch_size, seq_len // horizon, codebook_size]
+            #     # traj_attentions = traj_attentions.mean(dim=1)  # average over heads
+            #     traj_attentions = traj_attentions.sum(dim=1)  # sum over heads
+            #     traj_attentions = traj_attentions[:, ::self.horizon, :]  # shape: [batch_size, seq_len // horizon, codebook_size]
                 
-                # mean = traj_attentions.mean(dim=-1, keepdim=True)  # shape: [batch_size, seq_len // horizon, 1]
-                # std = traj_attentions.std(dim=-1, keepdim=True) 
-                # traj_attentions = (traj_attentions - mean) / (std + 1e-6)  # normalize the attention scores
+            #     # mean = traj_attentions.mean(dim=-1, keepdim=True)  # shape: [batch_size, seq_len // horizon, 1]
+            #     # std = traj_attentions.std(dim=-1, keepdim=True) 
+            #     # traj_attentions = (traj_attentions - mean) / (std + 1e-6)  # normalize the attention scores
 
-                # traj_attentions = F.softmax(traj_attentions / attention_temperature, dim=-1)  # apply softmax to get
-                traj_attentions = F.softmax(traj_attentions, dim=-1)  # apply softmax again to ensure the distribution is valid
+            #     # traj_attentions = F.softmax(traj_attentions / attention_temperature, dim=-1)  # apply softmax to get
+            #     traj_attentions = F.softmax(traj_attentions, dim=-1)  # apply softmax again to ensure the distribution is valid
 
-                # shape: [codebook_size]
-                # soft_counts = traj_attentions.sum(dim=(0, 1))  
-                soft_counts = traj_attentions.reshape(-1, traj_attentions.shape[-1])
-                # num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
+            #     # shape: [codebook_size]
+            #     # soft_counts = traj_attentions.sum(dim=(0, 1))  
+            #     soft_counts = traj_attentions.reshape(-1, traj_attentions.shape[-1])
+            #     # num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
 
-                # cond_probs = traj_attentions + 1e-9
-                # probs = cond_probs.mean(dim=(0, 1))
-                # marginal_entropy = (-torch.log2(probs) * probs).sum()
-                # cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
+            #     # cond_probs = traj_attentions + 1e-9
+            #     # probs = cond_probs.mean(dim=(0, 1))
+            #     # marginal_entropy = (-torch.log2(probs) * probs).sum()
+            #     # cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
 
-            _, _, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
-            entropies = entropy(self.Z.codebook, None, self.Z.project_in(option_preds))
-            options = option_preds
+            # _, _, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
+            options_vq, indices, commitment_loss = self.Z(option_preds)
+            entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
+            alpha = 0.1
+            options = alpha * option_preds + (1 - alpha) * options_vq
 
-            indices = soft_counts
+            # indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)
         else:
             # TODO: For now simply return the first dim of option
@@ -207,5 +209,5 @@ class OptionSelector(nn.Module):
             options, option_indx, _, _, _ = self.forward(
                 word_embeddings, states, None, attention_mask=None, **kwargs)
 
-        # return options[0, -1], option_indx[0, -1]
-        return options[0, -1], option_indx[-1]
+        return options[0, -1], option_indx[0, -1]
+        # return options[0, -1], option_indx[-1]

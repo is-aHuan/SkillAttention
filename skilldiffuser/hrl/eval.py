@@ -208,23 +208,32 @@ def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_d
     # we keep all the histories on the device
     # note that the latest action and reward will be "padding"
 
-    sub_task_lang = planner.decompose_task(lang, cur_state)
-    instruct_subtask_lang = [lang] + sub_task_lang
-    lm_input = tokenizer(text=instruct_subtask_lang, add_special_tokens=True,
+    # sub_task_lang = planner.decompose_task(lang, cur_state)
+    # instruct_subtask_lang = [lang] + sub_task_lang
+    # lm_input = tokenizer(text=instruct_subtask_lang, add_special_tokens=True,
+    #                      return_tensors='pt', padding=True).to(device=device)
+    
+    lm_input = tokenizer(text=[lang], add_special_tokens=True,
                          return_tensors='pt', padding=True).to(device=device)
     
     with torch.no_grad():
+        # lm_embeddings = model.lm(
+        #     lm_input['input_ids'], lm_input['attention_mask']).last_hidden_state
+        # cls_embeddings = lm_embeddings[0, 0, :].unsqueeze_(0)  # CLS token for the main task
+        # # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
+        # word_embeddings = lm_embeddings[0, 1:, :].unsqueeze_(0)  # skip the CLS tokens
+
+        # # subtask_lm_embeddings = model.lm(
+        # #     sub_task_input['input_ids'], sub_task_input['attention_mask']).last_hidden_state
+        # subtask_cls_embeddings = lm_embeddings[1:, 0, :]
+        # # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
+        # subtask_word_embeddings = lm_embeddings[1:, 1:, :]      # skip the CLS tokens
+
         lm_embeddings = model.lm(
             lm_input['input_ids'], lm_input['attention_mask']).last_hidden_state
-        cls_embeddings = lm_embeddings[0, 0, :].unsqueeze_(0)  # CLS token for the main task
+        cls_embeddings = lm_embeddings[:, 0, :]
         # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
-        word_embeddings = lm_embeddings[0, 1:, :].unsqueeze_(0)  # skip the CLS tokens
-
-        # subtask_lm_embeddings = model.lm(
-        #     sub_task_input['input_ids'], sub_task_input['attention_mask']).last_hidden_state
-        subtask_cls_embeddings = lm_embeddings[1:, 0, :]
-        # word_embeddings = lm_embeddings[:, 1:-1, :]      # skip the CLS and SEP tokens. here there's no padding so this is actually the CLS and SEP
-        subtask_word_embeddings = lm_embeddings[1:, 1:, :]      # skip the CLS tokens
+        word_embeddings = lm_embeddings[:, 1:, :]      # skip the CLS tokens
 
     if isinstance(state_dim, tuple):
         states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
@@ -241,8 +250,9 @@ def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_d
 
     option = None
     action_hist = None
-    sub_task_idx = 0
-
+    # sub_task_idx = 0
+    # is_subtask_finish = False
+    
     for t in range(max_ep_len):
         # add dummy action
         actions = torch.cat([actions, torch.zeros((1, act_dim), device=device)], dim=0)
@@ -252,20 +262,20 @@ def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_d
             options = None
 
         if action_hist is None:
-            cur_state = states[-1].reshape(1, *state_dim)
+            # cur_state = states[-1].reshape(1, *state_dim)
 
-            if sub_task_idx < len(sub_task_lang):
-                is_subtask_finish = planner.verify_subtask(sub_task_lang[sub_task_idx], cur_state)
+            # if sub_task_idx < len(sub_task_lang):
+            #     is_subtask_finish = planner.verify_subtask(sub_task_lang[sub_task_idx], cur_state)
 
-            if is_subtask_finish:
-                sub_task_idx = sub_task_idx + 1
+            # if is_subtask_finish:
+            #     sub_task_idx = sub_task_idx + 1
 
-            if sub_task_idx < len(sub_task_lang):
-                word_embeddings = subtask_word_embeddings[sub_task_idx, :, :].unsqueeze_(0)
-                cls_embeddings = subtask_cls_embeddings[sub_task_idx, :].unsqueeze_(0)
-            else:
-                cls_embeddings = lm_embeddings[0, 0, :].unsqueeze_(0)  # CLS token for the main task
-                word_embeddings = lm_embeddings[0, 1:, :].unsqueeze_(0)  # skip the CLS tokens
+            # if sub_task_idx < len(sub_task_lang):
+            #     word_embeddings = subtask_word_embeddings[sub_task_idx, :, :].unsqueeze_(0)
+            #     cls_embeddings = subtask_cls_embeddings[sub_task_idx, :].unsqueeze_(0)
+            # else:
+            #     cls_embeddings = lm_embeddings[0, 0, :].unsqueeze_(0)  # CLS token for the main task
+            #     word_embeddings = lm_embeddings[0, 1:, :].unsqueeze_(0)  # skip the CLS tokens
 
             action_hist, option, states, actions, timesteps, options = get_action(
                 model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state,
@@ -301,14 +311,6 @@ def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_d
         else:
             cur_state = torch.from_numpy(state).to(device=device).reshape(1, state_dim)
 
-        # # TODO: 如果子任务指令用完了，是继续使用最后一个还是使用总任务指令？
-        # if action_hist is None:
-        #     is_subtask_finish = planner.verify_subtask(sub_task_lang[sub_task_idx], cur_state)
-        #     if is_subtask_finish:
-        #         if sub_task_idx == len(sub_task_lang) - 1:
-        #             sub_task_lang.append(sub_task_lang[sub_task_idx])
-        #         sub_task_idx = min(sub_task_idx + 1, len(sub_task_lang) - 1)
-
         states = torch.cat([states, cur_state], dim=0).float()
         timesteps = torch.cat(
             [timesteps,
@@ -323,14 +325,14 @@ def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_d
 
     if method != 'vanilla' and model.option_selector.use_vq:
         tokens = get_tokens(lm_input, tokenizer)
-        # for o in options_list:
-        #     for w in tokens:
-        #         words_dict[o].append(w)
+        for o in options_list:
+            for w in tokens:
+                words_dict[o].append(w)
 
-        for scores in options_list:
-            for i in range(len(scores)):
-                for w in tokens:
-                    words_dict[i].append({w: scores[i].item()})
+        # for scores in options_list:
+        #     for i in range(len(scores)):
+        #         for w in tokens:
+        #             words_dict[i].append({w: scores[i].item()})
 
 
     return episode_return, episode_length, success, options_list, lang, images, words_dict
@@ -352,8 +354,8 @@ def get_action(
         return action, None, states, actions, timesteps, None
     else:
 
-        horizon = 4
-        # K = 2
+        # horizon = 4
+        # K = 4
         if t % (horizon - 1) == 0:
             # Choose a new option after every horizon steps
             if method == 'option':
@@ -363,7 +365,7 @@ def get_action(
                     word_embeddings.mean(1, keepdim=True), states[-1].reshape(1, 1, -1), **kwargs)
             else:
                 option, option_index = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
-            options_list.append(option_index.cpu())
+            options_list.append(option_index.cpu().item())
 
         if t % (K - 1) == 0:
             # Reset state, actions, options and timesteps after every K steps

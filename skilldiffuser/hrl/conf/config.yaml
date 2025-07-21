@@ -21,7 +21,7 @@ render: False  # False
 render_path: ./eval_${env.name}/
 
 batch_size: 2  # 512
-max_iters: 150  # TODO
+max_iters: 241  # TODO
 warmup_steps: 2500 # 5000
 
 lr_decay: 0.1
@@ -47,7 +47,7 @@ trainer:
   device:  ## to be filled in code
   state_il: False
   num_eval_episodes: 100
-  eval_every: 1
+  eval_every: 20
   K: ${model.K}
 
 model:   
@@ -71,7 +71,7 @@ iq:
 
 # Extra args
 log_interval: 1  # Log every this many iterations
-save_interval: 50 # Save networks every this many iterations
+save_interval: 10 # Save networks every this many iterations
 hydra_base_dir: ""
 exp_name: 'test_skdif'
 project_name: ${env.name}

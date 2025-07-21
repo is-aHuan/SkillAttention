@@ -126,14 +126,14 @@ class DiffTrainer(nn.Module):
         torch.save(data, savepath)
         logger.print(f'[ utils/training ] Saved model to {savepath}')
 
-    def load(self, loadpath, device):
+    def load(self, loadpath):
         '''
             loads model and ema from disk
         '''
         # loadpath = os.path.join(self.bucket, logger.prefix, f'checkpoint/state.pt')
         # data = logger.load_torch(loadpath)
         # data = torch.load(loadpath, map_location=device)
-        data = torch.load(loadpath, map_location=device)
+        data = torch.load(loadpath)
 
         # self.step = data['step']
         self.model.load_state_dict(data['model'])

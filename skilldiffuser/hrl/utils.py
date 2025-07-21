@@ -14,6 +14,13 @@ import torch.distributions as pyd
 from einops import rearrange, repeat
 import math
 
+LORL_SINGLE_INSTRS = ['open drawer',
+                      'close drawer',
+                      'turn faucet left',
+                      'turn faucet right',
+                      'move black mug right',
+                      'move white mug down']
+
 # We addded these instructions
 LORL_COMPOSITION_INSTRS = ['open drawer and move black mug right',
                            'pull the handle and move black mug down',
