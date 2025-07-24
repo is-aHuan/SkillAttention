@@ -14,6 +14,7 @@ python -m torch.distributed.run \
     option_selector.option_transformer.n_head=4 \
     option_selector.commitment_weight=0.1 \
     option_selector.option_transformer.hidden_size=128 \
-    batch_size=320 seed=1 warmup_steps=5000 resume=False \
-    # checkpoint_path=/root/codespace/SkillDiffuserTune/outputs/2025-07-18/10-51-29/checkpoints/LorlEnv-v0-40108-traj_option-2025-07-18-10:51:30/model_160.ckpt \
-    # diffuser.loadpath=/root/codespace/SkillDiffuserTune/outputs/2025-07-18/10-51-29/buckets/diffuser_log/checkpoint/state_480000.pt
+    batch_size=320 seed=1 warmup_steps=5000 resume=True \
+    max_iters=100 \
+    checkpoint_path=/root/codespace/SkillDiffuserTune/outputs/2025-07-23/09-58-57/checkpoints/LorlEnv-v0-40108-traj_option-2025-07-23-09:58:57/model_40.ckpt \
+    diffuser.loadpath=/root/codespace/SkillDiffuserTune/outputs/2025-07-23/09-58-57/buckets/diffuser_log/checkpoint/state_200000.pt

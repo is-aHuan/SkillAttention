@@ -7,6 +7,7 @@ from diffuser.utils.training import EMA
 from ml_logger import logger
 import os
 import torch.nn as nn
+import torch.distributed as dist
 
 class DiffTrainer(nn.Module):
     def __init__(
@@ -72,15 +73,32 @@ class DiffTrainer(nn.Module):
         loss, infos = self.model.loss(*batch)
         # loss = loss / self.gradient_accumulate_every
 
+        # self.optimizer.zero_grad()
+        # loss.backward(retain_graph=True)
+        # self.optimizer.step()
+
         self.optimizer.zero_grad()
         loss.backward(retain_graph=True)
+
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            # 遍历模型的所有参数
+            for param in self.model.parameters():
+                # 确保参数有梯度
+                if param.grad is not None:
+                    # 1. 对梯度执行 AllReduce (SUM) 操作，结果会保存在每个进程的 param.grad.data 中
+                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                    # 2. 除以 world_size 得到平均梯度
+                    param.grad.data /= world_size
+
         self.optimizer.step()
 
         if self.step % self.update_ema_every == 0:
             self.step_ema()
 
         if self.step % self.save_freq == 0:
-            self.save()
+            if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
+                self.save()
 
         infos.pop('obs')
 

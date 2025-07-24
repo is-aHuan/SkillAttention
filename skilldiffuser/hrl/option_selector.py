@@ -56,6 +56,19 @@ class OptionSelector(nn.Module):
             # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
         )
 
+        # self.Z_cross_attn = VectorQuantize(
+        #     dim=option_dim,
+        #     codebook_dim=codebook_dim,       # codebook vector size
+        #     codebook_size=num_options / 2,     # codebook size
+        #     decay=0.99,             # the exponential moving average decay, lower means the dictionary will change faster
+        #     commitment_weight=commitment_weight,   # the weight on the commitment loss
+        #     kmeans_init=kmeans_init,   # use kmeans init
+        #     cpc=False,
+        #     # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
+        #     use_cosine_sim=False,   # l2 normalize the codes
+        #     # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+        # )
+
         if self.method == 'traj_option':
             option_transformer_args = {'state_dim': state_dim,
                                        'lang_dim': lang_dim,
@@ -74,6 +87,27 @@ class OptionSelector(nn.Module):
                                        'add_cross_attention': True,
                                        }
             self.option_dt = OptionTransformer(**option_transformer_args)
+
+            # option_addition_transformer_args = {'state_dim': state_dim,
+            #                            'lang_dim': lang_dim,
+            #                            'option_dim': option_dim,
+            #                            'hidden_size': option_transformer.hidden_size,
+            #                            'max_length': option_transformer.max_length,
+            #                            'max_ep_len': option_transformer.max_ep_len,
+            #                            'n_layer': option_transformer.n_layer,
+            #                            'n_head': option_transformer.n_head,
+            #                            'n_inner': 4*option_transformer.hidden_size,
+            #                            'activation_function': option_transformer.activation_function,
+            #                            'n_positions': option_transformer.n_positions,
+            #                            'resid_pdrop': option_transformer.dropout,
+            #                            'attn_pdrop': option_transformer.dropout,
+            #                            'output_attentions': True,  # option_transformer.output_attention,
+            #                            'add_cross_attention': True,
+            #                            }
+            # self.option_addition_dt = OptionTransformer(**option_addition_transformer_args)
+
+            # self.alpha = nn.Parameter(torch.logit(torch.tensor(0.1)))  # learnable alpha for the linear combination of options
+            
         else:
             if isinstance(state_dim, tuple):
                 # LORL
@@ -98,13 +132,16 @@ class OptionSelector(nn.Module):
             self.embed_lang = nn.Linear(lang_dim, hidden_size)
 
     def forward(self, word_embeddings, states, timesteps=None, attention_mask=None, **kwargs):
-        option_attentions = None
         if self.method == 'traj_option':
             dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
             option_preds = dt_ret[0]
             # option_attentions = dt_ret[1]
             state_embeddings = dt_ret[2]
             option_preds = option_preds[:, ::self.horizon, :]
+
+            # add_dt_ret = self.option_addition_dt(word_embeddings, states, timesteps, attention_mask, self.Z_cross_attn.codebook)
+            # option_addition_preds = add_dt_ret[0]
+            # option_addition_preds = option_addition_preds[:, ::self.horizon, :]
         else:
             ret_state_embeddings = self.embed_state(states).clone().detach()
             horizon_states = states[:, ::self.horizon, :]
@@ -158,8 +195,14 @@ class OptionSelector(nn.Module):
             # _, _, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
             options_vq, indices, commitment_loss = self.Z(option_preds)
             entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
+
+            # options_addition, indices_addtion, commitment_loss_addition = self.Z_cross_attn(option_addition_preds)
+            # entropies_additon = entropy(self.Z_cross_attn.codebook, options_addition, self.Z_cross_attn.project_in(option_addition_preds))
+
             alpha = 0.1
             options = alpha * option_preds + (1 - alpha) * options_vq
+
+            # options = alpha * options_addition + (1 - alpha) * options
 
             # indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)

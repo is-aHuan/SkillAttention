@@ -335,8 +335,21 @@ def train(args):
         train_dataset = ExpertDataset(**train_dataset_args)
     else:
         raise NotImplementedError
+
+
+    local_rank = None
+    if 'cuda' in device and os.environ.get('LOCAL_RANK') is not None:
+        local_rank = int(os.environ.get('LOCAL_RANK', -1))
+
+    train_sampler = None
+    shuffle = True
+
+    if local_rank is not None and local_rank != -1: # 如果在DDP环境中
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        shuffle = False # 当提供sampler时，shuffle必须为False
+
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=32,
-                              shuffle=True, pin_memory=True, drop_last=True)
+                              shuffle=shuffle, pin_memory=True, drop_last=True, sampler=train_sampler)
 
     print('=' * 50)
     print(f'Starting new experiment: {args.env.name} {args.train_dataset.num_trajectories}')
@@ -582,10 +595,6 @@ def train(args):
     # else:
     #     model = model.to(device=device)
 
-    local_rank = None
-    if 'cuda' in device and os.environ.get('LOCAL_RANK') is not None:
-        local_rank = int(os.environ.get('LOCAL_RANK'))
-
     # ... model initialization ...
     model = model.to(device) # 先将模型移到指定设备
 
@@ -644,7 +653,8 @@ def train(args):
             wandb.log(outputs, step=iter_num)
 
         if iter_num % args.save_interval == 0:
-            trainer.save(iter_num, f'{args.savepath}/model_{iter_num}.ckpt', args)
+            if local_rank == 0:
+                trainer.save(iter_num, f'{args.savepath}/model_{iter_num}.ckpt', args)
 
         # break
 
@@ -685,6 +695,7 @@ def main(cfg: DictConfig):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
 
     if 'cuda' in args.trainer.device and os.environ.get('LOCAL_RANK') is not None:
         torch.distributed.init_process_group(backend='nccl')

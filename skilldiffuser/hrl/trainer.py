@@ -72,7 +72,7 @@ class Trainer:
         horizon = model.horizon
         iq = model.diffuser.predict_q
         
-        # self.model.train()
+        self.model.train()
         
         ind = 0
         for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
@@ -227,13 +227,15 @@ class Trainer:
             # loss = act_loss + state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss
             loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss  # 0.001
             # loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss
-        
-            # TODO delete
-            # if (ind+1) % 10 == 0:
-            self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), .25)
-            self.optimizer.step()
+
+            # TODO delete
+            if (ind+1) % 10 == 0:
+                # self.optimizer.zero_grad()
+                # loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), .25)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
         
             train_losses.append(loss.detach().cpu().item())
             if discrete:
@@ -359,7 +361,7 @@ class Trainer:
             # setting this to be sufficiently large
             # max_ep_len = self.eval_episode_factor * self.train_loader.dataset.max_length
             # max_ep_len = self.train_loader.dataset.max_length
-            max_ep_len = 80
+            max_ep_len = 40
 
             if render:
                 if not os.path.isdir(render_path):
