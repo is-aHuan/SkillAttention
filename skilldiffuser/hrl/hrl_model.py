@@ -231,16 +231,18 @@ class HRLModel(nn.Module, IQMixin):
 
             conds = {0: stacked_inputs[:, -1, self.diffuser.act_dim:]}
             returns = option_embeddings  # conditions
+            action = ema_diffusion_model.conditional_sample(conds, returns=returns)
+            action = action[:, :, :self.action_dim]
 
-            samples = ema_diffusion_model.conditional_sample(conds, returns=returns)
+            # samples = ema_diffusion_model.conditional_sample(conds, returns=returns)
             # action = samples.reshape(-1, samples.shape[-1])
 
-            action_hist = []
-            for tt in range(samples.shape[1]-1):
-                obs_comb = torch.cat([samples[:, tt, :], samples[:, tt+1, :]], dim=-1)
-                obs_comb = obs_comb.reshape(-1, 2 * self.diffuser.hidden_size)
-                action = ema_diffusion_model.inv_model(obs_comb)
-                action_hist.append(action)
+            # action_hist = []
+            # for tt in range(samples.shape[1]-1):
+            #     obs_comb = torch.cat([samples[:, tt, :], samples[:, tt+1, :]], dim=-1)
+            #     obs_comb = obs_comb.reshape(-1, 2 * self.diffuser.hidden_size)
+            #     action = ema_diffusion_model.inv_model(obs_comb)
+            #     action_hist.append(action)
 
             # obs_comb = torch.cat([samples[:, 0, :], samples[:, 1, :]], dim=-1)
             # obs_comb = obs_comb.reshape(-1, 2 * self.diffuser.hidden_size)
@@ -257,8 +259,8 @@ class HRLModel(nn.Module, IQMixin):
                 action = action.argmax(dim=1)
 
         # action = action.squeeze(0)
-        action = torch.cat(action_hist, dim=0)
-        return action
+        # action = torch.cat(action_hist, dim=0)
+        return action.squeeze(dim=0)
 
     def save(self, iter_num, filepath, config):
         if hasattr(self.model, 'module'):

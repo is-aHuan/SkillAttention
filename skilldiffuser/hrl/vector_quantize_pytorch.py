@@ -37,6 +37,26 @@ def orthogonal_ema_inplace(matrix, decay):
     update_direction = orthogonal_target - matrix
     matrix.data.add_(update_direction, alpha=(1 - decay))
 
+def gram_schmidt(v):
+    
+    def projection(u, v):
+        denominator = (u * u).sum()
+
+        if denominator < 1e-8:
+            return (v * u).sum() * u / (denominator + 1e-8)
+        return (v * u).sum() * u / denominator
+
+    ortho = torch.zeros_like(v, device=v.device)
+    ortho[0] = v[0].clone()
+
+    for k in range(1, v.shape[0]):
+        vk = v[k].clone()
+        uk = 0
+        for j in range(k):
+            uj = ortho[j].clone()
+            uk = uk + projection(uj, vk)
+        ortho[k] = vk - uk
+    return ortho
 
 def laplace_smoothing(x, n_categories, eps=1e-5):
     return (x + eps) / (x.sum() + n_categories * eps)
@@ -93,9 +113,6 @@ def orthgonal_loss_fn(t):
     cosine_sim = einsum('i d, j d -> i j', normed_codes, normed_codes)
     return ((cosine_sim - identity) ** 2).sum() / (n ** 2)
 
-# distance types
-
-
 def info_nce(code, embeds, pos_indices, dist):
     # assume embeds are B, T, D
     # codes are B, T, D with N quantized values
@@ -133,6 +150,7 @@ class EuclideanCodebook(nn.Module):
     ):
         super().__init__()
         self.decay = decay
+        self.orthogonal_decay = 0.9 * decay
         init_fn = torch.randn if not kmeans_init else torch.zeros
         embed = init_fn(codebook_size, dim)
 
@@ -202,7 +220,8 @@ class EuclideanCodebook(nn.Module):
             ema_inplace(self.cluster_size, batch_usage_counts.sum(0), self.decay)
             embed_sum = flatten.t() @ batch_usage_counts
             ema_inplace(self.embed_avg, embed_sum.t(), self.decay)
-            # orthogonal_ema_inplace(self.embed_avg, self.decay)
+            orthogonal_ema_inplace(self.embed_avg, self.orthogonal_decay)
+            # self.embed_avg = gram_schmidt(self.embed_avg)
 
             cluster_size = laplace_smoothing(self.cluster_size, self.codebook_size, self.eps) * self.cluster_size.sum()
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(1)

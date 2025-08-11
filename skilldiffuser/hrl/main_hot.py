@@ -473,7 +473,8 @@ def train(args):
             condition_guidance_w=args.diffuser.condition_guidance_w,
             device=device,
         )
-    else:
+        
+    elif args.diffuser.diffusion == 'models.ActionDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
             savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
@@ -485,6 +486,45 @@ def train(args):
             dim_mults=eval(args.diffuser.dim_mults),
             returns_condition=args.diffuser.returns_condition,
             dim=args.diffuser.dim,
+            condition_dropout=args.diffuser.condition_dropout,
+            calc_energy=args.diffuser.calc_energy,
+            device=device,
+        )
+
+        diffusion_config = diffutils.Config(
+            args.diffuser.diffusion,
+            savepath=os.path.join(diffuser_save_path, 'diffusion_config.pkl'),
+            horizon=args.diffuser.horizon,
+            hidden_size=args.dt.hidden_size,  # TODO
+            # observation_dim=observation_dim,
+            # action_dim=action_dim,
+            # observation_dim=args.dt.hidden_size,  # TODO
+            action_dim=args.env.action_dim,  # TODO
+            n_timesteps=args.diffuser.n_diffusion_steps,
+            loss_type=args.diffuser.loss_type,
+            clip_denoised=args.diffuser.clip_denoised,
+            predict_epsilon=args.diffuser.predict_epsilon,
+            ## loss weighting
+            # action_weight=args.diffuser.action_weight,
+            # loss_weights=args.diffuser.loss_weights,
+            loss_discount=args.diffuser.loss_discount,
+            returns_condition=args.diffuser.returns_condition,
+            condition_guidance_w=args.diffuser.condition_guidance_w,
+            device=device,
+        )
+
+    else:
+        model_config = diffutils.Config(
+            args.diffuser.model,
+            savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
+            horizon=args.diffuser.horizon,
+            # transition_dim=observation_dim + action_dim,
+            # cond_dim=observation_dim,
+            transition_dim=2 * args.dt.hidden_size,  # TODO (action, obs)
+            cond_dim=args.dt.hidden_size,  # TODO
+            dim_mults=eval(args.diffuser.dim_mults),
+            returns_condition=args.diffuser.returns_condition,
+            dim=2 * args.diffuser.dim,
             condition_dropout=args.diffuser.condition_dropout,
             calc_energy=args.diffuser.calc_energy,
             device=device,
@@ -564,8 +604,8 @@ def train(args):
         assert train_dataset.max_length == checkpoint[
             'train_dataset_max_length'], f"Expected max length of dataset to be {train_dataset.max_length} but got {checkpoint['train_dataset_max_length']}"
 
-        if ".pt" in args.diffuser.loadpath:
-            model.diff_trainer.load(args.diffuser.loadpath)
+    if ".pt" in args.diffuser.loadpath:
+        model.diff_trainer.load(args.diffuser.loadpath)
 
     if args.load_options:
         checkpoint = torch.load(args.checkpoint_path)

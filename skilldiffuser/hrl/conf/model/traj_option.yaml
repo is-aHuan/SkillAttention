@@ -19,7 +19,8 @@ diffuser:
 #  savepath: '/home/zxliang/new-code/LISA/lisa/outputs/diffuser_debug'
 
   model: 'models.TemporalUnet'
-  diffusion: 'models.GaussianInvDynDiffusion'
+  # diffusion: 'models.GaussianInvDynDiffusion'
+  diffusion: 'models.Diffusion'
   horizon: ${model.horizon}  # 100
   dim_mults: '(1, 4, 8)'
   n_diffusion_steps: 200   # 512
@@ -28,7 +29,7 @@ diffuser:
   predict_epsilon: True
   ## loss weighting
   action_weight: 10
-  loss_weights: None
+  loss_weights: 
   loss_discount: 1
 
   returns_condition: True

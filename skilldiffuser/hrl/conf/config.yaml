@@ -71,7 +71,7 @@ iq:
 
 # Extra args
 log_interval: 1  # Log every this many iterations
-save_interval: 10 # Save networks every this many iterations
+save_interval: 15 # Save networks every this many iterations
 hydra_base_dir: ""
 exp_name: 'test_skdif'
 project_name: ${env.name}
