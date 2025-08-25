@@ -220,7 +220,7 @@ class EuclideanCodebook(nn.Module):
             ema_inplace(self.cluster_size, batch_usage_counts.sum(0), self.decay)
             embed_sum = flatten.t() @ batch_usage_counts
             ema_inplace(self.embed_avg, embed_sum.t(), self.decay)
-            orthogonal_ema_inplace(self.embed_avg, self.orthogonal_decay)
+            # orthogonal_ema_inplace(self.embed_avg, self.orthogonal_decay)
             # self.embed_avg = gram_schmidt(self.embed_avg)
 
             cluster_size = laplace_smoothing(self.cluster_size, self.codebook_size, self.eps) * self.cluster_size.sum()

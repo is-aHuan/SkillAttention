@@ -43,7 +43,7 @@ def evaluate(cfg):
     device = cfg.trainer.device
 
     with open_dict(args.train_dataset):
-        args.train_dataset.expert_location = '/root/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
+        args.train_dataset.expert_location = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
         # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
         args.train_dataset.num_trajectories = 1000
         # args.trainer.num_eval_episodes = 1
@@ -308,6 +308,9 @@ def train(args):
     exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
+    # with open_dict(args.train_dataset):
+    #     args.train_dataset.expert_location = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
+
     if args.wandb:
         # os.environ["WANDB_MODE"] = "offline"
         wandb.init(
@@ -431,8 +434,10 @@ def train(args):
     #                              'no_actions': args.dt.no_actions,
     #                              }
 
-    tmp_path = os.path.split(args.hydra_base_dir)
-    diffuser_save_path = os.path.join("outputs", os.path.split(tmp_path[0])[1], tmp_path[1])
+    # tmp_path = os.path.split(args.hydra_base_dir)
+    # diffuser_save_path = os.path.join("outputs", os.path.split(tmp_path[0])[1], tmp_path[1])
+
+    diffuser_save_path = args.hydra_base_dir
     if args.diffuser.diffusion == 'models.GaussianInvDynDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
@@ -604,8 +609,8 @@ def train(args):
         assert train_dataset.max_length == checkpoint[
             'train_dataset_max_length'], f"Expected max length of dataset to be {train_dataset.max_length} but got {checkpoint['train_dataset_max_length']}"
 
-    if ".pt" in args.diffuser.loadpath:
-        model.diff_trainer.load(args.diffuser.loadpath)
+        if ".pt" in args.diffuser.loadpath:
+            model.diff_trainer.load(args.diffuser.loadpath)
 
     if args.load_options:
         checkpoint = torch.load(args.checkpoint_path)
@@ -666,12 +671,12 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, adjust_lr)
     # optimizer, scheduler = None, None
 
-    planner = RoboBrainPlanner()
+    # planner = RoboBrainPlanner()
     trainer_args = dict(args.trainer)
     trainer = Trainer(
         args=args,
         model=model,
-        planner=planner,
+        # planner=planner,
         tokenizer=tokenizer,
         optimizer=optimizer,
         train_loader=train_loader,
@@ -722,13 +727,15 @@ def get_args(cfg: DictConfig):
     else:
         cfg.trainer.device = "cpu"
         print("CPU: No CUDA GPUs available.")
-    cfg.hydra_base_dir = os.getcwd()
+    # cfg.hydra_base_dir = os.getcwd()
     # tmp_path = os.path.split(cfg.hydra_base_dir)
     return cfg
 
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.1")
 def main(cfg: DictConfig):
+
+    cfg.hydra_base_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     args = get_args(cfg)
 
     # set seeds

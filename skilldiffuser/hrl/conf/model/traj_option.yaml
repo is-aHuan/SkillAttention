@@ -28,7 +28,7 @@ diffuser:
 #  clip_denoised: True
   predict_epsilon: True
   ## loss weighting
-  action_weight: 10
+  action_weight: 1
   loss_weights: 
   loss_discount: 1
 

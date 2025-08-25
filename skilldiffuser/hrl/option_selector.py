@@ -70,28 +70,28 @@ class OptionSelector(nn.Module):
                                        'n_positions': option_transformer.n_positions,
                                        'resid_pdrop': option_transformer.dropout,
                                        'attn_pdrop': option_transformer.dropout,
-                                       'output_attentions': False,  # option_transformer.output_attention,
-                                       'add_cross_attention': False,
-                                       }
-            self.option_dt = OptionTransformer(**option_transformer_args)
-
-            option_addition_transformer_args = {'state_dim': state_dim,
-                                       'lang_dim': lang_dim,
-                                       'option_dim': option_dim,
-                                       'hidden_size': option_transformer.hidden_size,
-                                       'max_length': option_transformer.max_length,
-                                       'max_ep_len': option_transformer.max_ep_len,
-                                       'n_layer': option_transformer.n_layer,
-                                       'n_head': option_transformer.n_head,
-                                       'n_inner': 4*option_transformer.hidden_size,
-                                       'activation_function': option_transformer.activation_function,
-                                       'n_positions': option_transformer.n_positions,
-                                       'resid_pdrop': option_transformer.dropout,
-                                       'attn_pdrop': option_transformer.dropout,
                                        'output_attentions': True,  # option_transformer.output_attention,
                                        'add_cross_attention': True,
                                        }
-            self.option_addition_dt = OptionTransformer(**option_addition_transformer_args)
+            self.option_dt = OptionTransformer(**option_transformer_args)
+
+            # option_addition_transformer_args = {'state_dim': state_dim,
+            #                            'lang_dim': lang_dim,
+            #                            'option_dim': option_dim,
+            #                            'hidden_size': option_transformer.hidden_size,
+            #                            'max_length': option_transformer.max_length,
+            #                            'max_ep_len': option_transformer.max_ep_len,
+            #                            'n_layer': option_transformer.n_layer,
+            #                            'n_head': option_transformer.n_head,
+            #                            'n_inner': 4*option_transformer.hidden_size,
+            #                            'activation_function': option_transformer.activation_function,
+            #                            'n_positions': option_transformer.n_positions,
+            #                            'resid_pdrop': option_transformer.dropout,
+            #                            'attn_pdrop': option_transformer.dropout,
+            #                            'output_attentions': True,  # option_transformer.output_attention,
+            #                            'add_cross_attention': True,
+            #                            }
+            # self.option_addition_dt = OptionTransformer(**option_addition_transformer_args)
 
             self.alpha = nn.Parameter(torch.logit(torch.tensor(1.0)))  # learnable alpha for the linear combination of options
             
@@ -120,14 +120,16 @@ class OptionSelector(nn.Module):
 
     def forward(self, word_embeddings, states, timesteps=None, attention_mask=None, **kwargs):
         if self.method == 'traj_option':
-            dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask)
+            dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
             option_preds = dt_ret[0]
-            state_embeddings = dt_ret[2]
+            option_addition_preds = dt_ret[1]
+            state_embeddings = dt_ret[3]
             option_preds = option_preds[:, ::self.horizon, :]
-
-            add_dt_ret = self.option_addition_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
-            option_addition_preds = add_dt_ret[0]
             option_addition_preds = option_addition_preds[:, ::self.horizon, :]
+
+            # add_dt_ret = self.option_addition_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
+            # option_addition_preds = add_dt_ret[0]
+            # option_addition_preds = option_addition_preds[:, ::self.horizon, :]
         else:
             ret_state_embeddings = self.embed_state(states).clone().detach()
             horizon_states = states[:, ::self.horizon, :]
@@ -187,6 +189,10 @@ class OptionSelector(nn.Module):
 
             alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
             options = alpha * option_addition_preds + (1 - alpha) * options_vq
+
+            # option_preds = (1 - alpha) * option_preds + alpha * option_addition_preds
+            # entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
+            # entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(options))
 
             # options = alpha * options_addition + (1 - alpha) * options
 

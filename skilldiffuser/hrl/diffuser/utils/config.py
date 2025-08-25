@@ -33,7 +33,9 @@ class Config(abc.Mapping):
             print(self)
 
         if savepath is not None:
-            logger.save_pkl(self, savepath)
+            path_parts = savepath.strip('/').split('/')
+            relative_savepath = '../../' + '/'.join(path_parts[2:])
+            logger.save_pkl(self, relative_savepath)
             print(f'[ utils/config ] Saved config to: {savepath}\n')
 
     def __repr__(self):

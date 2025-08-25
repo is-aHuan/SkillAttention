@@ -20,12 +20,12 @@ from viz import get_tokens, viz_matrix, plot_hist, viz_matrix2
 
 class Trainer:
 
-    def __init__(self, args, model, planner, tokenizer, optimizer, train_loader, env=None, env_name=None, val_loader=None,
+    def __init__(self, args, model, tokenizer, optimizer, train_loader, env=None, env_name=None, val_loader=None,
                  state_il=True, scheduler=None, eval_episode_factor=2, eval_every=50, num_eval_episodes=10, K=10,
                  skip_words=None, device='cuda'):
         self.args = args
         self.model = model
-        self.planner = planner
+        # self.planner = planner
         self.tokenizer = tokenizer
         self.optimizer = optimizer
         self.train_loader = train_loader
@@ -51,14 +51,14 @@ class Trainer:
         entropies, lang_entropies, mutual_info = [], [], []
         logs = dict()
 
-        # if iter_num == 1:
-        #     eval_start = time.time()
+        if iter_num == 1:
+            eval_start = time.time()
 
-        #     self.model.eval()
-        #     eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
-        #     for k, v in eval_outputs.items():
-        #         logs[f'evaluation/{k}'] = v
-        #     logs['time/evaluation'] = time.time() - eval_start
+            self.model.eval()
+            eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
+            for k, v in eval_outputs.items():
+                logs[f'evaluation/{k}'] = v
+            logs['time/evaluation'] = time.time() - eval_start
 
         train_start = time.time()
         
@@ -324,7 +324,7 @@ class Trainer:
                 env = BabyAIWrapper(self.env, self.train_loader.dataset)
 
                 episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.tokenizer, model, self.planner, max_ep_len, self.K, words_dict, render, device,
+                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                     render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i, ema_diffusion_model=ema_diffusion_model)
 
                 if render and i % render_freq == 0:
@@ -381,7 +381,7 @@ class Trainer:
                                       instr=instr, orig_instr=instr)
                     with torch.no_grad():
                         episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                            env, no_lang, self.tokenizer, model, self.planner, max_ep_len, self.K, words_dict, render, device,
+                            env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                             render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                             render_freq=render_freq, iter_num=iter_num, i=i)
 
@@ -432,7 +432,7 @@ class Trainer:
                                       instr=instr, orig_instr=instr)
                     with torch.no_grad():
                         episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                            env, no_lang, self.tokenizer, model, self.planner, max_ep_len, self.K, words_dict, render, device,
+                            env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
                             render_path=render_path, ema_diffusion_model=ema_diffusion_model,
                             render_freq=render_freq, iter_num=iter_num, i=i)
 

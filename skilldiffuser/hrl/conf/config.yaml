@@ -33,7 +33,7 @@ codebook_dim: 16
 
 parallel: False  # True
 savedir: 'checkpoints'
-savepath: /root/dataspace/lorel/may_08_sawyer_50k/ ## to be filled in code
+savepath: /home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/ ## to be filled in code
 
 method: ## to be filled in code
 use_iq: False ## use IQ-Learn objective instead of BC
@@ -71,7 +71,13 @@ iq:
 
 # Extra args
 log_interval: 1  # Log every this many iterations
-save_interval: 15 # Save networks every this many iterations
-hydra_base_dir: ""
+save_interval: 30 # Save networks every this many iterations
+hydra_base_dir: "/home/lyh/data_folder/skdif_tune_outputs"
 exp_name: 'test_skdif'
 project_name: ${env.name}
+
+# Hydra 配置
+hydra:
+  run:
+    # ${now:%Y-%m-%d} 只使用年-月-日的格式
+    dir: ${hydra_base_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}

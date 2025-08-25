@@ -177,7 +177,7 @@ from viz import get_tokens
 #             torch.cat([timesteps_list[i], timesteps_list[i][-1].reshape(1, 1) + 1], dim=0) for i in range(N)]
 
 
-def eval_episode(env, no_lang, tokenizer, model, planner, max_ep_len, K, words_dict, render, device, ema_diffusion_model, **kwargs):
+def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, render, device, ema_diffusion_model, **kwargs):
     """Evaluate a single episode."""
     images = []
     method = model.method
