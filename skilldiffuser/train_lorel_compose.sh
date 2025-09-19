@@ -14,6 +14,6 @@ python -m torch.distributed.run \
     option_selector.option_transformer.n_head=4 \
     option_selector.commitment_weight=0.1 \
     option_selector.option_transformer.hidden_size=128 \
-    batch_size=256 seed=1 warmup_steps=5000 resume=False \
-    # checkpoint_path=/home/lyh/data_folder/skdif_tune_outputs/2025-08-18/16-54-04/checkpoints/LorlEnv-v0-40108-traj_option-2025-08-18-16:54:04/model_90.ckpt \
-    # diffuser.loadpath=/home/lyh/data_folder/skdif_tune_outputs/2025-08-18/16-54-04/buckets/diffuser_log/checkpoint/state_210000.pt
+    batch_size=280 seed=1 warmup_steps=5000 resume=True \
+    checkpoint_path=/home/lyh/data_folder/skdif_tune_outputs/2025-08-28/15-23-55/checkpoints/LorlEnv-v0-40108-traj_option-2025-08-28-15:23:55/model_330.ckpt \
+    diffuser.loadpath=/home/lyh/data_folder/skdif_tune_outputs/2025-08-28/15-23-54/wandb/offline-run-20250828_152355-dw3iinx1/files/requirements.txt

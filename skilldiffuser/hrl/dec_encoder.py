@@ -164,6 +164,9 @@ class DecEncoder(TrajectoryModel):
 
             else:
                 stacked_inputs = self.embed_ln(torch.cat((actions, state_embeddings), dim=2)) 
+                # state_embeddings = self.embed_ln(state_embeddings)
+
+                # stacked_inputs = torch.cat((actions, state_embeddings), dim=2)   # (B, seq_length, )
 
             # # to make the attention mask fit the stacked inputs, have to stack it as well
             # stacked_attention_mask = torch.stack(

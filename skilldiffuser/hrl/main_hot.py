@@ -31,8 +31,8 @@ from inferencer.robobrain_planner import RoboBrainPlanner
 
 def evaluate(cfg):
     # load saved arguments
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    checkpoint = torch.load(cfg.checkpoint_path, map_location=device)
+    device = cfg.trainer.device 
+    checkpoint = torch.load(cfg.checkpoint_path, map_location='cpu')
     args = checkpoint['config']
     max_length = checkpoint['train_dataset_max_length']
     args.eval = cfg.eval
@@ -40,18 +40,19 @@ def evaluate(cfg):
     args.checkpoint_path = cfg.checkpoint_path
     args.diffuser.loadpath = cfg.diffuser.loadpath
     args.hydra_base_dir = cfg.hydra_base_dir
-    device = cfg.trainer.device
 
-    with open_dict(args.train_dataset):
-        args.train_dataset.expert_location = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
-        # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
-        args.train_dataset.num_trajectories = 1000
-        # args.trainer.num_eval_episodes = 1
-    # args.train_dataset['path'] = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
-    # args.train_dataset['num_trajectories'] = 1000
+    args.trainer.device = device
+    args.method = args.model.name
+    exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
+    args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
-    # Set num train_trajs to something small
-    args.train_dataset.num_trajectories = 1000
+    # with open_dict(args.train_dataset):
+    #     args.train_dataset.expert_location = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
+    #     # args.diffuser.loadpath = '/root/lorel/skdif_eval/state_400000.pt',
+    #     args.train_dataset.num_trajectories = 1000
+
+    # # Set num train_trajs to something small
+    # args.train_dataset.num_trajectories = 100
     print(OmegaConf.to_yaml(args))
 
     args.method = args.model.name
@@ -98,19 +99,39 @@ def evaluate(cfg):
     #                       'no_lang': False, 'seed': 1, 
     #                       'aug': True, 
     #                       'path': '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'}
+    
+
 
     train_dataset_args = dict(args.train_dataset)
     batch_size = args.batch_size
-
     if 'BabyAI' in args.env.name:
         train_dataset = ExpertDataset(**train_dataset_args, use_direction=args.env.use_direction)
     elif 'Lorl' in args.env.name:
-        # train_dataset_args also contains a split here for the validation data size
         train_dataset = ExpertDataset(**train_dataset_args, use_state=args.env.use_state)
+    elif 'Hopper' in args.env.name:
+        train_dataset = ExpertDataset(**train_dataset_args)
     else:
         raise NotImplementedError
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=96,
-                              shuffle=True, drop_last=True)
+
+
+    local_rank = None
+    if 'cuda' in device and os.environ.get('LOCAL_RANK') is not None:
+        local_rank = int(os.environ.get('LOCAL_RANK', -1))
+
+    train_sampler = None
+    shuffle = True
+
+    if local_rank is not None and local_rank != -1: # 如果在DDP环境中
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        shuffle = False # 当提供sampler时，shuffle必须为False
+
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=32,
+                              shuffle=shuffle, pin_memory=True, drop_last=True, sampler=train_sampler)
+
+    print('=' * 50)
+    print(f'Starting new experiment: {args.env.name} {args.train_dataset.num_trajectories}')
+    print(f'{len(train_dataset)} trajectories, {train_dataset.total_timesteps} timesteps found')
+    print('=' * 50)
 
     if args.method == 'traj_option':
         args.option_selector.option_transformer.max_length = int(max_length)
@@ -123,30 +144,44 @@ def evaluate(cfg):
     option_selector_args['codebook_dim'] = args.codebook_dim
     state_reconstructor_args = dict(args.state_reconstructor)
     lang_reconstructor_args = dict(args.lang_reconstructor)
-    decision_transformer_args = {'state_dim': state_dim,
-                                 'action_dim': action_dim,
-                                 'option_dim': args.option_dim,
-                                 'discrete': args.env.discrete,
-                                 'hidden_size': args.dt.hidden_size,
-                                 'use_language': args.method == 'vanilla',
-                                 'use_options': args.method != 'vanilla',
-                                 'option_il': args.dt.option_il,
-                                 'max_length': max_length if args.method != 'traj_option' else args.model.K,
-                                 'max_ep_len': args.env.eval_episode_factor*max_length,
-                                 'action_tanh': False,
-                                 'n_layer': args.dt.n_layer,
-                                 'n_head': args.dt.n_head,
-                                 'n_inner': 4*args.dt.hidden_size,
-                                 'activation_function': args.dt.activation_function,
-                                 'n_positions': args.dt.n_positions,
-                                 'n_ctx': args.dt.n_positions,
-                                 'resid_pdrop': args.dt.dropout,
-                                 'attn_pdrop': args.dt.dropout,
-                                 'eval': args.eval,
-                                 }
+    # decision_transformer_args = {'state_dim': state_dim,
+    #                              'action_dim': action_dim,
+    #                              'option_dim': args.option_dim,
+    #                              'discrete': args.env.discrete,
+    #                              'hidden_size': args.dt.hidden_size,
+    #                              'use_language': args.method == 'vanilla',
+    #                              'use_options': args.method != 'vanilla',
+    #                              'option_il': args.dt.option_il,
+    #                              'max_length': max_length if args.method != 'traj_option' else args.model.K,
+    #                              'max_ep_len': args.env.eval_episode_factor*max_length,
+    #                              'action_tanh': False,
+    #                              'n_layer': args.dt.n_layer,
+    #                              'n_head': args.dt.n_head,
+    #                              'n_inner': 4*args.dt.hidden_size,
+    #                              'activation_function': args.dt.activation_function,
+    #                              'n_positions': args.dt.n_positions,
+    #                              'n_ctx': args.dt.n_positions,
+    #                              'resid_pdrop': args.dt.dropout,
+    #                              'attn_pdrop': args.dt.dropout,
+    #                              'eval': args.eval,
+    #                              }
+
+    decision_args = {'state_dim': state_dim,
+                     'action_dim': action_dim,
+                     'option_dim': args.option_dim,
+                     'discrete': args.env.discrete,
+                     'hidden_size': args.dt.hidden_size,
+                     'use_language': args.method == 'vanilla',
+                     'use_options': args.method != 'vanilla',
+                     'predict_q': args.use_iq,
+                     'max_length': train_dataset.max_length if 'option' not in args.method else args.model.K,  # used to be K
+                     'max_ep_len': args.env.eval_episode_factor * train_dataset.max_length,
+                     'eval': args.eval,
+                     }
 
     # tmp_path = os.path.split(args.hydra_base_dir)
     # diffuser_save_path = os.path.join("outputs", os.path.split(tmp_path[0])[1], tmp_path[1])
+    diffuser_save_path = args.hydra_base_dir
     if args.diffuser.diffusion == 'models.GaussianInvDynDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
@@ -187,7 +222,8 @@ def evaluate(cfg):
             condition_guidance_w=args.diffuser.condition_guidance_w,
             device=device,
         )
-    else:
+        
+    elif args.diffuser.diffusion == 'models.ActionDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
             # savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
@@ -199,6 +235,45 @@ def evaluate(cfg):
             dim_mults=eval(args.diffuser.dim_mults),
             returns_condition=args.diffuser.returns_condition,
             dim=args.diffuser.dim,
+            condition_dropout=args.diffuser.condition_dropout,
+            calc_energy=args.diffuser.calc_energy,
+            device=device,
+        )
+
+        diffusion_config = diffutils.Config(
+            args.diffuser.diffusion,
+            # savepath=os.path.join(diffuser_save_path, 'diffusion_config.pkl'),
+            horizon=args.diffuser.horizon,
+            hidden_size=args.dt.hidden_size,  # TODO
+            # observation_dim=observation_dim,
+            # action_dim=action_dim,
+            # observation_dim=args.dt.hidden_size,  # TODO
+            action_dim=args.env.action_dim,  # TODO
+            n_timesteps=args.diffuser.n_diffusion_steps,
+            loss_type=args.diffuser.loss_type,
+            clip_denoised=args.diffuser.clip_denoised,
+            predict_epsilon=args.diffuser.predict_epsilon,
+            ## loss weighting
+            # action_weight=args.diffuser.action_weight,
+            # loss_weights=args.diffuser.loss_weights,
+            loss_discount=args.diffuser.loss_discount,
+            returns_condition=args.diffuser.returns_condition,
+            condition_guidance_w=args.diffuser.condition_guidance_w,
+            device=device,
+        )
+
+    else:
+        model_config = diffutils.Config(
+            args.diffuser.model,
+            # savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
+            horizon=args.diffuser.horizon,
+            # transition_dim=observation_dim + action_dim,
+            # cond_dim=observation_dim,
+            transition_dim=2 * args.dt.hidden_size,  # TODO (action, obs)
+            cond_dim=args.dt.hidden_size,  # TODO
+            dim_mults=eval(args.diffuser.dim_mults),
+            returns_condition=args.diffuser.returns_condition,
+            dim=2 * args.diffuser.dim,
             condition_dropout=args.diffuser.condition_dropout,
             calc_energy=args.diffuser.calc_energy,
             device=device,
@@ -253,26 +328,35 @@ def evaluate(cfg):
     diff_trainer = DiffTrainer(args, diffusion_model, diff_trainer_args)
 
     model = HRLModel(args, option_selector_args, state_reconstructor_args,
-                     lang_reconstructor_args, decision_transformer_args, iq_args, diff_trainer, device, **hrl_model_args)
+                     lang_reconstructor_args, decision_args, iq_args, diff_trainer, device, **hrl_model_args)
     
+    model.to(device)
     model.load_state_dict(checkpoint['model'], strict=False)
+
     # start_iter = checkpoint['iter_num'] + 1
     assert train_dataset.max_length == checkpoint[
         'train_dataset_max_length'], f"Expected max length of dataset to be {train_dataset.max_length} but got {checkpoint['train_dataset_max_length']}"
 
     if ".pt" in args.diffuser.loadpath:
-        model.diff_trainer.load(args.diffuser.loadpath, device=device)
+        model.diff_trainer.load(args.diffuser.loadpath)
+
+    del checkpoint
+    torch.cuda.empty_cache()
 
     print(model)
-    model = model.to(device=device)
+    if local_rank is not None: # 使用 DDP
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank,
+                                                          find_unused_parameters=True)
+    elif args.parallel and torch.cuda.device_count() > 1: # 使用 DataParallel 
+        model = torch.nn.DataParallel(model)
 
     trainer_args = dict(args.trainer)
 
-    planner = RoboBrainPlanner()
+    # planner = RoboBrainPlanner()
     trainer = Trainer(
         args,
         model=model,
-        planner=planner,
+        # planner=planner,
         tokenizer=tokenizer,
         optimizer=None,
         train_loader=train_loader,
@@ -287,19 +371,21 @@ def evaluate(cfg):
     # Restore trainer from checkpoint
     # trainer.load(args.checkpoint_path)
     # trainer.model.diff_trainer.load(args.diffuser.loadpath)
-    eval_time_start = time.time()
-    render_path = f'{args.hydra_base_dir}/renders'
-    eval_metrics = trainer.evaluate(iter_num=0, render=args.render, max_ep_len=500, render_path=render_path)
 
-    logs = dict()
-    for k,v in eval_metrics.items():
-        logs[f'evaluation/{k}'] = v
-    logs['evaluation/eval_time'] = time.time() - eval_time_start
-    wandb.log(logs, step=0)
-    
-    print('=' * 80)
-    for k,v in logs.items():
-        print(f'{k}: {v}')
+    for iter_num in range(10):
+        eval_time_start = time.time()
+        render_path = f'{args.hydra_base_dir}/renders'
+        eval_metrics = trainer.evaluate(iter_num=iter_num+1, render=args.render, max_ep_len=500, render_path=render_path, lorl_compose=False, lorl_single=False)
+
+        logs = dict()
+        for k,v in eval_metrics.items():
+            logs[f'evaluation/{k}'] = v
+        logs['evaluation/eval_time'] = time.time() - eval_time_start
+        wandb.log(logs, step=iter_num+1)
+        
+        print('=' * 80)
+        for k,v in logs.items():
+            print(f'{k}: {v}')
 
 
 def train(args):
@@ -597,13 +683,14 @@ def train(args):
     # # Set num train_trajs to something small
     # args.train_dataset.num_trajectories = 1000
 
-    start_iter = 1
+    start_iter = 341
     if args.resume:
         args.warmup_steps = 0
         #checkpoint = trainer.load(args.checkpoint_path)
-        checkpoint = torch.load(args.checkpoint_path)
-        checkpoint['model']['diffuser.embed_ln.weight'] = checkpoint['model']['diffuser.embed_ln.weight']
-        checkpoint['model']['diffuser.embed_ln.bias'] = checkpoint['model']['diffuser.embed_ln.bias']
+        checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+        model = model.to(device)
+        # checkpoint['model']['diffuser.embed_ln.weight'] = checkpoint['model']['diffuser.embed_ln.weight']
+        # checkpoint['model']['diffuser.embed_ln.bias'] = checkpoint['model']['diffuser.embed_ln.bias']
         model.load_state_dict(checkpoint['model'], strict=False)
         # start_iter = checkpoint['iter_num'] + 1
         assert train_dataset.max_length == checkpoint[
@@ -611,6 +698,12 @@ def train(args):
 
         if ".pt" in args.diffuser.loadpath:
             model.diff_trainer.load(args.diffuser.loadpath)
+
+        del checkpoint
+        torch.cuda.empty_cache()
+
+    else:
+        model = model.to(device) # 先将模型移到指定设备
 
     if args.load_options:
         checkpoint = torch.load(args.checkpoint_path)
@@ -641,7 +734,7 @@ def train(args):
     #     model = model.to(device=device)
 
     # ... model initialization ...
-    model = model.to(device) # 先将模型移到指定设备
+    # model = model.to(device) # 先将模型移到指定设备
 
     if local_rank is not None: # 使用 DDP
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank,

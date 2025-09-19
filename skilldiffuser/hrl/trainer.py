@@ -51,14 +51,14 @@ class Trainer:
         entropies, lang_entropies, mutual_info = [], [], []
         logs = dict()
 
-        if iter_num == 1:
-            eval_start = time.time()
+        # if iter_num == 1:
+        #     eval_start = time.time()
 
-            self.model.eval()
-            eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
-            for k, v in eval_outputs.items():
-                logs[f'evaluation/{k}'] = v
-            logs['time/evaluation'] = time.time() - eval_start
+        #     self.model.eval()
+        #     eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
+        #     for k, v in eval_outputs.items():
+        #         logs[f'evaluation/{k}'] = v
+        #     logs['time/evaluation'] = time.time() - eval_start
 
         train_start = time.time()
         
