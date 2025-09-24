@@ -56,6 +56,19 @@ class OptionSelector(nn.Module):
             orthogonal_reg_weight=0.1,  # orthogonal regularization weight
         )
 
+        self.Z_cross_attn = VectorQuantize(
+            dim=option_dim,
+            codebook_dim=codebook_dim,       # codebook vector size
+            codebook_size=num_options,     # codebook size
+            decay=0.99,             # the exponential moving average decay, lower means the dictionary will change faster
+            commitment_weight=commitment_weight,   # the weight on the commitment loss
+            kmeans_init=kmeans_init,   # use kmeans init
+            cpc=False,
+            # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
+            use_cosine_sim=False,   # l2 normalize the codes
+            orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+        )   
+
         if self.method == 'traj_option':
             option_transformer_args = {'state_dim': state_dim,
                                        'lang_dim': lang_dim,
@@ -74,6 +87,8 @@ class OptionSelector(nn.Module):
                                        'add_cross_attention': True,
                                        }
             self.option_dt = OptionTransformer(**option_transformer_args)
+            self.option_adaptor = nn.Linear(option_dim, option_dim // 2)
+            self.option_addition_adaptor = nn.Linear(option_dim, option_dim // 2)
 
             # option_addition_transformer_args = {'state_dim': state_dim,
             #                            'lang_dim': lang_dim,
@@ -184,17 +199,16 @@ class OptionSelector(nn.Module):
             options_vq, indices, commitment_loss = self.Z(option_preds)
             entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
 
-            # options_addition, indices_addtion, commitment_loss_addition = self.Z_cross_attn(option_addition_preds)
-            # entropies_additon = entropy(self.Z_cross_attn.codebook, options_addition, self.Z_cross_attn.project_in(option_addition_preds))
+            options_addition, indices_addtion, commitment_loss_addition = self.Z_cross_attn(option_addition_preds)
+            entropies_additon = entropy(self.Z_cross_attn.codebook, options_addition, self.Z_cross_attn.project_in(option_addition_preds))
 
-            alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
-            options = alpha * option_addition_preds + (1 - alpha) * options_vq
+            # alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
+            # options = alpha * option_addition_preds + (1 - alpha) * options_vq
 
-            # option_preds = (1 - alpha) * option_preds + alpha * option_addition_preds
-            # entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
-            # entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(options))
-
-            # options = alpha * options_addition + (1 - alpha) * options
+            options = torch.cat([self.option_adaptor(options_vq), self.option_addition_adaptor(options_addition)], dim=-1)
+                # 更新 commitment_loss
+            commitment_loss = commitment_loss + commitment_loss_addition * 0.1  # 使用不同的权重
+            entropies = (entropies[0] + 0.1 * entropies_additon[0], entropies[1] + 0.1 * entropies_additon[1])
 
             # indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)

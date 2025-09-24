@@ -232,7 +232,7 @@ class HRLModel(nn.Module, IQMixin):
             conds = {0: stacked_inputs[:, -1, self.diffuser.act_dim:]}
             returns = option_embeddings  # conditions
             action = ema_diffusion_model.conditional_sample(conds, returns=returns)
-            action = action[:, :, :self.action_dim]
+            action = action[:, :-1, :self.action_dim]
 
             # samples = ema_diffusion_model.conditional_sample(conds, returns=returns)
             # action = samples.reshape(-1, samples.shape[-1])

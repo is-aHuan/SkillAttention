@@ -139,7 +139,7 @@ class LorlWrapper(gym.Wrapper):
         self.env = env
         self.dataset = dataset
         self.use_state = dataset.kwargs["use_state"]
-        self.state_mean, self.state_std = self.dataset.state_mean, self.dataset.state_std
+        self.state_mean, self.state_std = self.dataset.state_mean.numpy(), self.dataset.state_std.numpy()
 
         self.state_dim = self.state_mean.shape
         self.act_dim = env.action_space.shape[0]

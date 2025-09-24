@@ -22,6 +22,7 @@ train_dataset:
   no_lang: False
   seed: ${seed}
   aug: True
+  memmap_dir: /home/lyh/codespace/SkillDiffuserTune/skilldiffuser/memmap
 
 val_dataset:
   expert_location: 

@@ -353,7 +353,7 @@ def get_action(
         )
         return action, None, states, actions, timesteps, None
     else:
-        if t % horizon == 0:
+        if t % (horizon - 1) == 0:
             # Choose a new option after every horizon steps
             if method == 'option':
                 # option, option_index = model.option_selector.get_option(
@@ -364,7 +364,7 @@ def get_action(
                 option, option_index = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
             options_list.append(option_index.cpu().item())
 
-        if t % K == 0:
+        if t % (K - 1) == 0:
             # Reset state, actions, options and timesteps after every K steps
             actions = torch.zeros((1, act_dim), device=device, dtype=torch.float32)
             options = torch.zeros((1, option_dim), device=device, dtype=torch.float32)

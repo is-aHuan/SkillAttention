@@ -12,6 +12,11 @@ os.environ["TZ"] = "Asia/Shanghai"
 import gym
 import numpy as np
 import torch
+import torch.distributed as dist
+
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 import wandb
 import datetime
 import time
@@ -28,6 +33,75 @@ from difftrainer import DiffTrainer
 import diffuser.utils as diffutils
 from omegaconf import open_dict
 from inferencer.robobrain_planner import RoboBrainPlanner
+
+def build_train_dataset_and_loader(args, device, batch_size):
+    """
+    使用 mmap 版 ExpertDataset：
+      - rank0 负责一次性写出 memmap 文件
+      - 其他 rank 只附着，不再广播大对象
+    """
+    # 识别 DDP 环境/进程信息
+    local_rank = int(os.environ.get("LOCAL_RANK", -1)) if "cuda" in device else -1
+    is_ddp = dist.is_available() and dist.is_initialized()
+    rank = dist.get_rank() if is_ddp else 0
+
+    # 取数据集参数
+    train_dataset_args = dict(args.train_dataset)  # hydra 的 DictConfig 转 dict
+    # 统一一个 memmap 输出目录（可在 config 里设置 train_dataset.memmap_dir）
+    memmap_dir = train_dataset_args.pop(
+        "memmap_dir",
+        os.path.join(getattr(args, "hydra_base_dir", "."), "mmap_train")
+    )
+
+    # 组装 ExpertDataset 的参数（与你原来的 env 开关兼容）
+    common_kwargs = dict(
+        expert_location=train_dataset_args["expert_location"],
+        num_trajectories=train_dataset_args.get("num_trajectories", 1),
+        subsample_frequency=train_dataset_args.get("subsample_frequency", 1),
+        seed=getattr(args, "seed", 0),
+        full_traj=train_dataset_args.get("full_traj", True),
+        normalize_states=train_dataset_args.get("normalize_states", True),
+        no_lang=train_dataset_args.get("no_lang", False),
+        memmap_dir=memmap_dir,
+        # writer / force_rebuild 下面分别设
+    )
+    if 'BabyAI' in args.env.name:
+        common_kwargs["use_direction"] = getattr(args.env, "use_direction", False)
+    elif 'Lorl' in args.env.name:
+        common_kwargs["use_state"] = getattr(args.env, "use_state", False)
+    # Hopper 无附加开关
+
+    # ---------- 不再广播大对象，rank0 写文件，其他 rank 附着 ----------
+    if is_ddp:
+        if rank == 0:
+            print("Rank 0: building memmap files...")
+            train_dataset = ExpertDataset(**common_kwargs, writer=True,
+                                          force_rebuild=train_dataset_args.get("force_rebuild", False))
+        dist.barrier()  # 确保写完
+        if rank != 0:
+            print(f"Rank {rank}: attaching to memmap at {memmap_dir} ...")
+            train_dataset = ExpertDataset(**common_kwargs, writer=False)
+        dist.barrier()  # 可选再同步一次
+    else:
+        print("Single process: building memmap files...")
+        train_dataset = ExpertDataset(**common_kwargs, writer=True,
+                                      force_rebuild=train_dataset_args.get("force_rebuild", False))
+
+    # ---------- Sampler / DataLoader ----------
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if is_ddp else None
+    shuffle = False if train_sampler is not None else True
+    num_workers = 8 if is_ddp else 32
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=shuffle,
+        pin_memory=True,
+        drop_last=True,
+        sampler=train_sampler
+    )
+    return train_dataset, train_loader, train_sampler
 
 def evaluate(cfg):
     # load saved arguments
@@ -415,34 +489,19 @@ def train(args):
     #K = args['K']
     batch_size = args.batch_size
 
-    train_dataset_args = dict(args.train_dataset)
-    if 'BabyAI' in args.env.name:
-        train_dataset = ExpertDataset(**train_dataset_args, use_direction=args.env.use_direction)
-    elif 'Lorl' in args.env.name:
-        train_dataset = ExpertDataset(**train_dataset_args, use_state=args.env.use_state)
-    elif 'Hopper' in args.env.name:
-        train_dataset = ExpertDataset(**train_dataset_args)
-    else:
-        raise NotImplementedError
+    # ==== 替换开始：用 mmap 版 ExpertDataset 构建数据集和 DataLoader ====
+    train_dataset, train_loader, train_sampler = build_train_dataset_and_loader(
+        args=args,
+        device=args.trainer.device,
+        batch_size=batch_size
+    )
+    # ==== 替换结束 ====
 
-
-    local_rank = None
-    if 'cuda' in device and os.environ.get('LOCAL_RANK') is not None:
-        local_rank = int(os.environ.get('LOCAL_RANK', -1))
-
-    train_sampler = None
-    shuffle = True
-
-    if local_rank is not None and local_rank != -1: # 如果在DDP环境中
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        shuffle = False # 当提供sampler时，shuffle必须为False
-
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, num_workers=32,
-                              shuffle=shuffle, pin_memory=True, drop_last=True, sampler=train_sampler)
 
     print('=' * 50)
+    total_timesteps = int(train_dataset.trajectories["lengths"].sum())  # memmap/内存模式都可用
     print(f'Starting new experiment: {args.env.name} {args.train_dataset.num_trajectories}')
-    print(f'{len(train_dataset)} trajectories, {train_dataset.total_timesteps} timesteps found')
+    print(f'{len(train_dataset)} trajectories, {total_timesteps} timesteps found')
     print('=' * 50)
 
     state_dim = args.env.state_dim
@@ -683,7 +742,7 @@ def train(args):
     # # Set num train_trajs to something small
     # args.train_dataset.num_trajectories = 1000
 
-    start_iter = 341
+    start_iter = 1
     if args.resume:
         args.warmup_steps = 0
         #checkpoint = trainer.load(args.checkpoint_path)
@@ -704,11 +763,14 @@ def train(args):
 
     else:
         model = model.to(device) # 先将模型移到指定设备
+        
+    if ".pt" in args.diffuser.loadpath:
+        model.diff_trainer.load(args.diffuser.loadpath)
 
     if args.load_options:
         checkpoint = torch.load(args.checkpoint_path)
         checkpoint = checkpoint['model']
-        pdb.set_trace()
+        # pdb.set_trace()
         state_dict = {k:v for k,v in checkpoint.items() if k.startswith('option_selector.Z')}
         loaded = model.load_state_dict(state_dict, strict=False)
         assert loaded.unexpected_keys == []   ## simple check
@@ -728,19 +790,22 @@ def train(args):
     #         if not name.startswith('diffuser.'):
     #             param.requires_grad = False
 
-    # if args.parallel:
-    #     model = torch.nn.DataParallel(model).to(device)
-    # else:
-    #     model = model.to(device=device)
+    is_ddp = dist.is_available() and dist.is_initialized()
+    global_rank = dist.get_rank() if is_ddp else 0
+    local_rank = int(os.environ.get("LOCAL_RANK", -1)) if is_ddp else -1
+    is_main_process = (global_rank == 0)
 
-    # ... model initialization ...
-    # model = model.to(device) # 先将模型移到指定设备
-
-    if local_rank is not None: # 使用 DDP
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank,
-                                                          find_unused_parameters=True)
-    elif args.parallel and torch.cuda.device_count() > 1: # 使用 DataParallel 
+    # ===== 包装模型 =====
+    if is_ddp:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank] if local_rank >= 0 else None,
+            output_device=local_rank if local_rank >= 0 else None,
+            find_unused_parameters=True
+        )
+    elif args.parallel and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
+        
 
     # Setting up the optimizer
     params = [(k, v) for k, v in model.named_parameters() if v.requires_grad]
@@ -795,12 +860,6 @@ def train(args):
                 trainer.save(iter_num, f'{args.savepath}/model_{iter_num}.ckpt', args)
 
         # break
-
-
-# def get_args(cfg: DictConfig):
-#     cfg.trainer.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-#     cfg.hydra_base_dir = os.getcwd()
-#     return cfg
 
 def get_args(cfg: DictConfig):
     if torch.cuda.is_available():
