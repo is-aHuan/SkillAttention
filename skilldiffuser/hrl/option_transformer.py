@@ -287,7 +287,7 @@ class OptionTransformer(nn.Module):
         option_preds_add = self.predict_options_add(traj_out_add)
 
         if self.output_attentions:
-            cross_attentions = transformer_outputs['cross_attentions'][-1]
+            cross_attentions = transformer_outputs['cross_attentions'][-1][:, :, num_tokens:, :]
             return option_preds, option_preds_add, cross_attentions, ret_state_embeddings
 
         return option_preds, option_preds_add, None, ret_state_embeddings

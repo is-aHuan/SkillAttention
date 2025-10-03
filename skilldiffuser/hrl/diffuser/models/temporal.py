@@ -13,6 +13,7 @@ from .helpers import (
     Conv1dBlock,
 )
 
+
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -122,7 +123,7 @@ class TemporalUnet(nn.Module):
 
         dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
-        print(f'[ models/temporal ] Channel dimensions: {in_out}')
+        print(f'[ models/temporal ] Channel dimensions: \n{in_out}')
 
         if calc_energy:
             mish = False

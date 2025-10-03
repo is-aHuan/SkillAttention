@@ -116,10 +116,10 @@ class HRLModel(nn.Module, IQMixin):
             # B, max_length // H, option_dim
             if self.method == 'option':
                 # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
-                selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+                selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
                     word_embeddings.mean(1, keepdim=True), states)
             else:
-                selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+                selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
                     word_embeddings, states, timesteps, attention_mask)
                 
             # if self.method == 'option':

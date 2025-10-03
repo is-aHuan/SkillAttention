@@ -233,6 +233,98 @@ class EuclideanCodebook(nn.Module):
         return quantize, embed_ind, dist
 
 
+# class CosineSimCodebook(nn.Module):
+#     def __init__(
+#         self,
+#         dim,
+#         codebook_size,
+#         kmeans_init=False,
+#         kmeans_iters=10,
+#         decay=0.8,
+#         eps=1e-5,
+#         threshold_ema_dead_code=2
+#     ):
+#         super().__init__()
+#         self.decay = decay
+
+#         if not kmeans_init:
+#             embed = l2norm(torch.randn(codebook_size, dim))
+#         else:
+#             embed = torch.zeros(codebook_size, dim)
+
+#         self.codebook_size = codebook_size
+#         self.kmeans_iters = kmeans_iters
+#         self.eps = eps
+#         self.threshold_ema_dead_code = threshold_ema_dead_code
+
+#         self.register_buffer('initted', torch.Tensor([not kmeans_init]))
+#         self.register_buffer('cluster_size', torch.zeros(codebook_size))
+#         self.register_buffer('embed', embed)
+
+#     @torch.jit.ignore
+#     def init_embed_(self, data):
+#         if self.initted:
+#             return
+
+#         embed, cluster_size = kmeans(data, self.codebook_size, self.kmeans_iters,
+#                                      use_cosine_sim=True)
+#         self.embed.data.copy_(embed)
+#         self.cluster_size.data.copy_(cluster_size)
+#         self.initted.data.copy_(torch.Tensor([True]))
+
+#     def replace(self, samples, mask):
+#         samples = l2norm(samples)
+#         modified_codebook = torch.where(
+#             mask[..., None],
+#             sample_vectors(samples, self.codebook_size),
+#             self.embed
+#         )
+#         self.embed.data.copy_(modified_codebook)
+
+#     def expire_codes_(self, batch_samples):
+#         if self.threshold_ema_dead_code == 0:
+#             return
+
+#         expired_codes = self.cluster_size < self.threshold_ema_dead_code
+#         if not torch.any(expired_codes):
+#             return
+#         batch_samples = rearrange(batch_samples, '... d -> (...) d')
+#         self.replace(batch_samples, mask=expired_codes)
+
+#     def forward(self, x):
+#         shape, dtype = x.shape, x.dtype
+#         flatten = rearrange(x, '... d -> (...) d')
+#         flatten = l2norm(flatten)
+
+#         self.init_embed_(flatten)
+
+#         embed = l2norm(self.embed)
+#         dist = flatten @ embed.t()
+#         embed_ind = dist.max(dim=-1).indices
+#         embed_onehot = F.one_hot(embed_ind, self.codebook_size).type(dtype)
+#         embed_ind = embed_ind.view(*shape[:-1])
+
+#         quantize = F.embedding(embed_ind, self.embed)
+
+#         if self.training:
+#             bins = embed_onehot.sum(0)
+#             ema_inplace(self.cluster_size, bins, self.decay)
+
+#             zero_mask = (bins == 0)
+#             bins = bins.masked_fill(zero_mask, 1.)
+
+#             embed_sum = flatten.t() @ embed_onehot
+#             embed_normalized = (embed_sum / bins.unsqueeze(0)).t()
+#             embed_normalized = l2norm(embed_normalized)
+#             embed_normalized = torch.where(zero_mask[..., None], embed,
+#                                            embed_normalized)
+#             ema_inplace(self.embed, embed_normalized, self.decay)
+#             self.expire_codes_(x)
+
+#         return quantize, embed_ind, dist
+
+# # main class
+
 class CosineSimCodebook(nn.Module):
     def __init__(
         self,
@@ -242,7 +334,13 @@ class CosineSimCodebook(nn.Module):
         kmeans_iters=10,
         decay=0.8,
         eps=1e-5,
-        threshold_ema_dead_code=2
+        threshold_ema_dead_code=2,
+        # 新增：随机化相关超参（默认关闭）
+        code_dropout_p: float = 0.0,       # 训练时随机屏蔽码字的概率
+        per_sample_dropout: bool = True,   # True: 每个样本独立屏蔽；False: 整个 batch 共享同一遮罩
+        gumbel_noise: float = 0.0,         # 往相似度加的 Gumbel 噪声强度（0 为关闭）
+        sample_top_k: int | None = None,   # 若 >1：在 top-k 中随机选一个
+        ema_bins_from_greedy: bool = False # 用贪心最近邻统计 EMA，减少统计偏差
     ):
         super().__init__()
         self.decay = decay
@@ -257,6 +355,13 @@ class CosineSimCodebook(nn.Module):
         self.eps = eps
         self.threshold_ema_dead_code = threshold_ema_dead_code
 
+        # 新增超参保存
+        self.code_dropout_p = float(code_dropout_p)
+        self.per_sample_dropout = bool(per_sample_dropout)
+        self.gumbel_noise = float(gumbel_noise)
+        self.sample_top_k = sample_top_k
+        self.ema_bins_from_greedy = bool(ema_bins_from_greedy)
+
         self.register_buffer('initted', torch.Tensor([not kmeans_init]))
         self.register_buffer('cluster_size', torch.zeros(codebook_size))
         self.register_buffer('embed', embed)
@@ -265,9 +370,10 @@ class CosineSimCodebook(nn.Module):
     def init_embed_(self, data):
         if self.initted:
             return
-
-        embed, cluster_size = kmeans(data, self.codebook_size, self.kmeans_iters,
-                                     use_cosine_sim=True)
+        embed, cluster_size = kmeans(
+            data, self.codebook_size, self.kmeans_iters,
+            use_cosine_sim=True
+        )
         self.embed.data.copy_(embed)
         self.cluster_size.data.copy_(cluster_size)
         self.initted.data.copy_(torch.Tensor([True]))
@@ -284,12 +390,66 @@ class CosineSimCodebook(nn.Module):
     def expire_codes_(self, batch_samples):
         if self.threshold_ema_dead_code == 0:
             return
-
         expired_codes = self.cluster_size < self.threshold_ema_dead_code
         if not torch.any(expired_codes):
             return
         batch_samples = rearrange(batch_samples, '... d -> (...) d')
         self.replace(batch_samples, mask=expired_codes)
+
+    def _apply_code_dropout(self, dist: torch.Tensor, greedy_idx: torch.Tensor | None):
+        """
+        对相似度矩阵 dist [N, C] 进行随机屏蔽与/或加噪，仅在训练时调用。
+        返回 masked_dist，用于后续选码字。
+        """
+        masked_dist = dist
+
+        # 1) 随机屏蔽部分码字（codebook dropout）
+        if self.code_dropout_p > 0.0:
+            if self.per_sample_dropout:
+                drop_mask = (torch.rand_like(dist) < self.code_dropout_p)
+            else:
+                drop_vec = (torch.rand(dist.size(-1), device=dist.device) < self.code_dropout_p)
+                drop_mask = drop_vec.unsqueeze(0).expand_as(dist)
+
+            masked_dist = dist.masked_fill(drop_mask, -1e9)
+
+            # 保护：若某行被全屏蔽，则回退为未屏蔽（或至少放开贪心 idx）
+            all_dropped = drop_mask.all(dim=-1)
+            if all_dropped.any():
+                if greedy_idx is None:
+                    # 直接完全回退该行
+                    masked_dist[all_dropped] = dist[all_dropped]
+                else:
+                    # 仅解锁贪心位置，确保至少有一个可选
+                    rows = torch.where(all_dropped)[0]
+                    masked_dist[rows] = masked_dist[rows]  # no-op 为了清晰
+                    masked_dist[rows, greedy_idx[rows]] = dist[rows, greedy_idx[rows]]
+
+        # 2) Gumbel 噪声（Gumbel-Max 采样）
+        if self.gumbel_noise > 0.0:
+            # 经典 Gumbel(0,1)
+            u = torch.rand_like(masked_dist).clamp_(min=1e-9, max=1 - 1e-9)
+            g = -torch.log(-torch.log(u))
+            masked_dist = masked_dist + self.gumbel_noise * g
+
+        return masked_dist
+
+    def _choose_indices(self, masked_dist: torch.Tensor):
+        """
+        从 masked_dist 选择码字索引。
+        支持 top-k 均匀随机；否则用 argmax。
+        """
+        if (self.sample_top_k is not None) and (self.sample_top_k > 1):
+            k = min(self.sample_top_k, masked_dist.size(-1))
+            topk = masked_dist.topk(k, dim=-1)
+            topk_idx = topk.indices  # [N, k]
+            # 在每行 top-k 里均匀随机一个
+            n = masked_dist.size(0)
+            r = torch.randint(k, (n,), device=masked_dist.device)
+            chosen = topk_idx[torch.arange(n, device=masked_dist.device), r]
+            return chosen
+        else:
+            return masked_dist.max(dim=-1).indices
 
     def forward(self, x):
         shape, dtype = x.shape, x.dtype
@@ -299,32 +459,46 @@ class CosineSimCodebook(nn.Module):
         self.init_embed_(flatten)
 
         embed = l2norm(self.embed)
-        dist = flatten @ embed.t()
-        embed_ind = dist.max(dim=-1).indices
-        embed_onehot = F.one_hot(embed_ind, self.codebook_size).type(dtype)
-        embed_ind = embed_ind.view(*shape[:-1])
+        # 原始相似度（作为返回 & 可选用于 EMA 统计的“贪心”）
+        dist = flatten @ embed.t()  # [N, C]
 
+        # 贪心最近邻（用于可选的稳定 EMA 统计）
+        greedy_idx = dist.max(dim=-1).indices
+
+        # 训练期可选：对相似度进行随机屏蔽/加噪 => 采样式选码字
+        if self.training and (self.code_dropout_p > 0.0 or self.gumbel_noise > 0.0 or (self.sample_top_k is not None and self.sample_top_k > 1)):
+            masked_dist = self._apply_code_dropout(dist, greedy_idx=greedy_idx)
+            chosen_idx = self._choose_indices(masked_dist)
+        else:
+            masked_dist = dist
+            chosen_idx = greedy_idx
+
+        embed_ind = chosen_idx.view(*shape[:-1])
         quantize = F.embedding(embed_ind, self.embed)
 
         if self.training:
+            # 统计用的 one-hot：可选使用贪心或实际选中的索引
+            bins_idx = greedy_idx if self.ema_bins_from_greedy else chosen_idx
+            embed_onehot = F.one_hot(bins_idx, self.codebook_size).type(dtype)
+
             bins = embed_onehot.sum(0)
             ema_inplace(self.cluster_size, bins, self.decay)
 
             zero_mask = (bins == 0)
             bins = bins.masked_fill(zero_mask, 1.)
 
-            embed_sum = flatten.t() @ embed_onehot
-            embed_normalized = (embed_sum / bins.unsqueeze(0)).t()
+            embed_sum = flatten.t() @ embed_onehot  # [D, C]
+            embed_normalized = (embed_sum / bins.unsqueeze(0)).t()  # [C, D]
             embed_normalized = l2norm(embed_normalized)
-            embed_normalized = torch.where(zero_mask[..., None], embed,
-                                           embed_normalized)
+            embed_normalized = torch.where(zero_mask[..., None], embed, embed_normalized)
+
             ema_inplace(self.embed, embed_normalized, self.decay)
+
+            # 注意：若使用较大的 dropout/随机化，可能导致“死亡码字”偏多
             self.expire_codes_(x)
 
+        # 返回原始 dist（未加噪/未遮罩），与原版保持一致
         return quantize, embed_ind, dist
-
-# main class
-
 
 class VectorQuantize(nn.Module):
     def __init__(
@@ -348,6 +522,7 @@ class VectorQuantize(nn.Module):
         orthogonal_reg_max_codes=None,
         quantize_full_precision=False,
         cpc=False,
+        **args
     ):
         super().__init__()
         n_embed = default(n_embed, codebook_size)
@@ -376,7 +551,8 @@ class VectorQuantize(nn.Module):
             kmeans_iters=kmeans_iters,
             decay=decay,
             eps=eps,
-            threshold_ema_dead_code=threshold_ema_dead_code
+            threshold_ema_dead_code=threshold_ema_dead_code,
+            **args
         )
 
         self.codebook_size = codebook_size
@@ -394,7 +570,7 @@ class VectorQuantize(nn.Module):
     def codebook(self):
         return self._codebook.embed
 
-    def forward(self, x, soft_counts=None):
+    def forward(self, x):
         shape, device, codebook_size = x.shape, x.device, self.codebook_size
 
         need_transpose = not self.channel_last and not self.accept_image_fmap
@@ -411,7 +587,7 @@ class VectorQuantize(nn.Module):
         context = null_context() if not self.quantize_full_precision else autocast(enabled=False)
 
         with context:
-            quantize, embed_ind, dist = self._codebook(x, soft_counts=soft_counts)
+            quantize, embed_ind, dist = self._codebook(x)
 
         if self.training:
             quantize = x + (quantize - x).detach()

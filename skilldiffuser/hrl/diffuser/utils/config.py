@@ -2,7 +2,7 @@ import os
 import collections.abc as abc
 import importlib
 import pickle
-from ml_logger import logger
+from ml_logger import logger as ml_logger
 
 def import_class(_class):
     if type(_class) is not str: return _class
@@ -35,11 +35,11 @@ class Config(abc.Mapping):
         if savepath is not None:
             path_parts = savepath.strip('/').split('/')
             relative_savepath = '../../' + '/'.join(path_parts[2:])
-            logger.save_pkl(self, relative_savepath)
+            ml_logger.save_pkl(self, relative_savepath)
             print(f'[ utils/config ] Saved config to: {savepath}\n')
 
     def __repr__(self):
-        string = f'\n[utils/config ] Config: {self._class}\n'
+        string = f'\n[ utils/config ] Config: {self._class}\n'
         for key in sorted(self._dict.keys()):
             val = self._dict[key]
             string += f'    {key}: {val}\n'

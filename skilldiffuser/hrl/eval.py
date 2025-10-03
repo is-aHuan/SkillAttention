@@ -177,7 +177,9 @@ from viz import get_tokens
 #             torch.cat([timesteps_list[i], timesteps_list[i][-1].reshape(1, 1) + 1], dim=0) for i in range(N)]
 
 
-def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, render, device, ema_diffusion_model, **kwargs):
+def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, 
+                 words_dict, weighted_words_dict, clip_weighted_words_dict, 
+                 render, device, ema_diffusion_model, **kwargs):
     """Evaluate a single episode."""
     images = []
     method = model.method
@@ -247,6 +249,7 @@ def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, rend
 
     episode_return, episode_length, success = 0, 0, 0
     options_list = []
+    weighted_options_list = []
 
     option = None
     action_hist = None
@@ -278,8 +281,8 @@ def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, rend
             #     word_embeddings = lm_embeddings[0, 1:, :].unsqueeze_(0)  # skip the CLS tokens
 
             action_hist, option, states, actions, timesteps, options = get_action(
-                model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state,
-                option, t, horizon, K, method, state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs)
+                model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, weighted_options_list, 
+                cur_state, option, t, horizon, K, method, state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs)
 
             action = action_hist[0]
             action_hist = action_hist[1:] if action_hist.shape[0] > 1 else None
@@ -329,18 +332,26 @@ def eval_episode(env, no_lang, tokenizer, model, max_ep_len, K, words_dict, rend
             for w in tokens:
                 words_dict[o].append(w)
 
-        # for scores in options_list:
-        #     for i in range(len(scores)):
-        #         for w in tokens:
-        #             words_dict[i].append({w: scores[i].item()})
+        for scores in weighted_options_list:
+            for i in range(len(scores)):
+                score_value = scores[i].item()
+                exceed_threshold = score_value > 1 / len(scores)
+                
+                for w in tokens:
+                    # 将每个词及其分数添加到 weighted_words_dict
+                    weighted_words_dict[i].append({w: score_value})
+                    
+                    # 如果分数超过阈值，将词添加到 clip_weighted_words_dict
+                    if exceed_threshold:
+                        clip_weighted_words_dict[i].append(w)
 
 
-    return episode_return, episode_length, success, options_list, lang, images, words_dict
+    return episode_return, episode_length, success, options_list, lang, images, words_dict, weighted_words_dict, clip_weighted_words_dict
 
 
 def get_action(
-        model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, cur_state, option, t,
-        horizon, K, method, state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs):
+        model, states, actions, options, timesteps, cls_embeddings, word_embeddings, options_list, weighted_options_list, 
+        cur_state, option, t, horizon, K, method, state_dim, act_dim, option_dim, device, ema_diffusion_model, **kwargs):
     """
         Compute action for model evaluation
     """
@@ -358,22 +369,24 @@ def get_action(
             if method == 'option':
                 # option, option_index = model.option_selector.get_option(
                 #     cls_embeddings, states[-1].reshape(1, 1, -1), **kwargs)
-                option, option_index = model.option_selector.get_option(
+                option, option_index, soft_idx = model.option_selector.get_option(
                     word_embeddings.mean(1, keepdim=True), states[-1].reshape(1, 1, -1), **kwargs)
             else:
-                option, option_index = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
+                option, option_index, soft_idx = model.option_selector.get_option(word_embeddings, states.to(dtype=torch.float32), timesteps.to(dtype=torch.long), **kwargs)
+
             options_list.append(option_index.cpu().item())
+            weighted_options_list.append(soft_idx.cpu()) 
 
-        if t % (K - 1) == 0:
-            # Reset state, actions, options and timesteps after every K steps
-            actions = torch.zeros((1, act_dim), device=device, dtype=torch.float32)
-            options = torch.zeros((1, option_dim), device=device, dtype=torch.float32)
+        # if t % (K - 1) == 0:
+        #     # Reset state, actions, options and timesteps after every K steps
+        #     actions = torch.zeros((1, act_dim), device=device, dtype=torch.float32)
+        #     options = torch.zeros((1, option_dim), device=device, dtype=torch.float32)
 
-            if isinstance(state_dim, tuple):
-                states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
-            else:
-                states = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float32)
-            timesteps = torch.ones((1, 1), device=device, dtype=torch.long) * (t + 1)
+        #     if isinstance(state_dim, tuple):
+        #         states = cur_state.reshape(1, *state_dim).to(device=device, dtype=torch.float32)
+        #     else:
+        #         states = cur_state.reshape(1, state_dim).to(device=device, dtype=torch.float32)
+        #     timesteps = torch.ones((1, 1), device=device, dtype=torch.long) * (t + 1)
 
         options[-1] = option
 

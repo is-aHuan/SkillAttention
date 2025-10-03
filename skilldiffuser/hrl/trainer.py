@@ -15,7 +15,7 @@ import wandb
 from env import BaseWrapper, LorlWrapper, BabyAIWrapper
 from eval import eval_episode
 from utils import pad, LORL_EVAL_INSTRS, LORL_COMPOSITION_INSTRS, LORL_SINGLE_INSTRS
-from viz import get_tokens, viz_matrix, plot_hist, viz_matrix2
+from viz import get_tokens, viz_matrix, plot_hist, viz_matrix2, viz_matrix2_weighted
 
 
 class Trainer:
@@ -242,11 +242,11 @@ class Trainer:
                 action_errors.append(1 - torch.mean(
                     (torch.argmax(action_preds, dim=1) == action_target).float()).detach().cpu().item())
             action_losses.append(act_loss.detach().cpu().item())
-            state_losses.append(state_loss.detach().cpu().item())
-            option_losses.append(options_loss.detach().cpu().item())
+            # state_losses.append(state_loss.detach().cpu().item())
+            # option_losses.append(options_loss.detach().cpu().item())
             diffuser_losses.append(diff_loss.detach().cpu().item())
-            state_rc_losses.append(state_rc_loss.detach().cpu().item())
-            lang_rc_losses.append(lang_rc_loss.detach().cpu().item())
+            # state_rc_losses.append(state_rc_loss.detach().cpu().item())
+            # lang_rc_losses.append(lang_rc_loss.detach().cpu().item())
             commitment_losses.append(commitment_loss.detach().cpu().item())
             entropies.append(entropy.detach().cpu().item())
             lang_entropies.append(lang_entropy.detach().cpu().item())
@@ -272,14 +272,17 @@ class Trainer:
         logs['time/total'] = time.time() - self.start_time
         logs['training/train_loss_mean'] = np.mean(train_losses)
         logs['training/train_loss_std'] = np.std(train_losses)
+
         if discrete:
             logs['training/action_error'] = np.mean(action_errors)
-        logs['training/action_pred_loss'] = np.mean(action_losses)
-        logs['training/state_pred_loss'] = np.mean(state_losses)
-        logs['training/options_pred_loss'] = np.mean(option_losses)
+        
+        # logs['training/state_pred_loss'] = np.mean(state_losses)
+        # logs['training/options_pred_loss'] = np.mean(option_losses)
+        # logs['training/state_rc_loss'] = np.mean(state_rc_losses)
+        # logs['training/lang_rc_loss'] = np.mean(lang_rc_losses)
+
         logs['training/diffuser_loss'] = np.mean(diffuser_losses)
-        logs['training/state_rc_loss'] = np.mean(state_rc_losses)
-        logs['training/lang_rc_loss'] = np.mean(lang_rc_losses)
+        logs['training/action_pred_loss'] = np.mean(action_losses)
         logs['training/commitment_loss'] = np.mean(commitment_losses)
         logs['training/entropy'] = np.mean(entropies)
         logs['training/lang_entropy'] = np.mean(lang_entropies)
@@ -310,9 +313,13 @@ class Trainer:
         no_lang = self.train_loader.dataset.no_lang  # whether to use language or not
 
         words_dict = {}
+        weighted_words_dict = {}
+        clip_weighted_words_dict = {}
         if method != 'vanilla':
             num_options = model.option_selector.num_options
             words_dict = {i: [] for i in range(num_options)}  # Create a list for each option
+            weighted_words_dict = {i: [] for i in range(num_options)}
+            clip_weighted_words_dict = {i: [] for i in range(num_options)}
 
         if self.env and 'BabyAI' in self.env.unwrapped.spec.id:
             # For BabyAI env
@@ -323,9 +330,10 @@ class Trainer:
             for i in tqdm(range(1, self.num_eval_episodes + 1)):
                 env = BabyAIWrapper(self.env, self.train_loader.dataset)
 
-                episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
-                    render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i, ema_diffusion_model=ema_diffusion_model)
+                episode_return, episode_length, success, options_list, lang, images, 
+                words_dict, weighted_words_dict, clip_weighted_words_dict = eval_episode(
+                    env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, weighted_words_dict, clip_weighted_words_dict, render, 
+                    device, render_path=render_path, render_freq=render_freq, iter_num=iter_num, i=i, ema_diffusion_model=ema_diffusion_model)
 
                 if render and i % render_freq == 0:
                     r = f'{iter_num}_{i}'
@@ -380,10 +388,11 @@ class Trainer:
                     env = LorlWrapper(self.env, self.train_loader.dataset,
                                       instr=instr, orig_instr=instr)
                     with torch.no_grad():
-                        episode_return, episode_length, success, options_list, lang, images, words_dict = eval_episode(
-                            env, no_lang, self.tokenizer, model, max_ep_len, self.K, words_dict, render, device,
-                            render_path=render_path, ema_diffusion_model=ema_diffusion_model,
-                            render_freq=render_freq, iter_num=iter_num, i=i)
+                        episode_return, episode_length, success, options_list, lang, images, words_dict, weighted_words_dict, clip_weighted_words_dict = eval_episode(
+                                env, no_lang, self.tokenizer, model, max_ep_len, self.K, 
+                                words_dict, weighted_words_dict, clip_weighted_words_dict, render, device,
+                                render_path=render_path, ema_diffusion_model=ema_diffusion_model,
+                                render_freq=render_freq, iter_num=iter_num, i=i)
 
                     if render and i % render_freq == 0:
                         r = f'{iter_num}_{i}'
@@ -654,7 +663,9 @@ class Trainer:
                 metrics['action_error'] = np.mean(action_errors)
 
         if method != 'vanilla' and model.option_selector.use_vq:
-            viz_matrix2(words_dict, num_options, iter_num, self.skip_words)
+            viz_matrix2(words_dict, num_options, iter_num, self.skip_words, figure_title='word')
+            viz_matrix2(clip_weighted_words_dict, num_options, iter_num, self.skip_words, figure_title='clip_weighted')
+            viz_matrix2_weighted(weighted_words_dict, num_options, iter_num, self.skip_words, figure_title='weighted')
             # pdb.set_trace()
 
         return metrics

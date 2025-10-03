@@ -9,6 +9,33 @@ from img_encoder import Encoder
 
 from vector_quantize_pytorch import VectorQuantize
 
+def _column_coverage_loss_from_logits(sim_logits, tau=0.7, eps=1e-8):
+    """
+    sim_logits: [B, T, C]  每个列（时间位）对 C 个码字的相似度
+    返回：标量 loss，鼓励每一列的使用分布接近均匀（最大熵）
+    """
+    # 软责任（温度 τ）
+    probs = F.softmax(sim_logits / tau, dim=-1)          # [B, T, C]
+    p_mean = probs.mean(dim=0)                           # [T, C]  每列在 batch 上的平均使用分布
+    # KL(Uniform || p_mean) = const - H(p_mean)；最小化即最大化熵
+    C = p_mean.size(-1)
+    uniform = p_mean.new_full((C,), 1.0 / C)
+    # cross-entropy(uniform, p_mean) = - sum (1/C) * log p_mean
+    loss_per_col = -(uniform * (p_mean.clamp_min(eps).log())).sum(dim=-1)  # [T]
+    return loss_per_col.mean()
+
+def _sim_logits(vq_module, option_preds):
+    """
+    用当前 codebook 和投影得到相似度 logits，形状 [B, T, C]
+    vq_module: VectorQuantize 实例 (self.Z 或 self.cross_attn_Z)
+    option_preds: [B, T, D]
+    """
+    x_proj = vq_module.project_in(option_preds)                 # [B, T, Cdim]
+    x_proj = F.normalize(x_proj, dim=-1)
+    cb = F.normalize(vq_module.codebook, dim=-1)               # [C, Cdim]
+    # [B, T, Cdim] x [Cdim, C] -> [B, T, C]
+    sim = torch.einsum('btc,kc->btk', x_proj, cb)
+    return sim
 
 class OptionSelector(nn.Module):
 
@@ -47,16 +74,18 @@ class OptionSelector(nn.Module):
             dim=option_dim,
             codebook_dim=codebook_dim,       # codebook vector size
             codebook_size=num_options,     # codebook size
-            decay=0.99,             # the exponential moving average decay, lower means the dictionary will change faster
+            decay=0.98,             # the exponential moving average decay, lower means the dictionary will change faster
             commitment_weight=commitment_weight,   # the weight on the commitment loss
             kmeans_init=kmeans_init,   # use kmeans init
             cpc=False,
-            # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
-            use_cosine_sim=False,   # l2 normalize the codes
-            orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+            threshold_ema_dead_code=3,  # should actively replace any codes that have an exponential moving average cluster size less than 2
+            use_cosine_sim=True,   # l2 normalize the codes
+            # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+            code_dropout_p=0.2,
+            sample_top_k=4,
         )
 
-        self.Z_cross_attn = VectorQuantize(
+        self.cross_attn_Z = VectorQuantize(
             dim=option_dim,
             codebook_dim=codebook_dim,       # codebook vector size
             codebook_size=num_options,     # codebook size
@@ -64,9 +93,11 @@ class OptionSelector(nn.Module):
             commitment_weight=commitment_weight,   # the weight on the commitment loss
             kmeans_init=kmeans_init,   # use kmeans init
             cpc=False,
-            # threshold_ema_dead_code=2,  # should actively replace any codes that have an exponential moving average cluster size less than 2
-            use_cosine_sim=False,   # l2 normalize the codes
-            orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+            threshold_ema_dead_code=3,  # should actively replace any codes that have an exponential moving average cluster size less than 2
+            use_cosine_sim=True,   # l2 normalize the codes
+            # orthogonal_reg_weight=0.1,  # orthogonal regularization weight
+            code_dropout_p=0.2,
+            sample_top_k=4,
         )   
 
         if self.method == 'traj_option':
@@ -89,24 +120,6 @@ class OptionSelector(nn.Module):
             self.option_dt = OptionTransformer(**option_transformer_args)
             self.option_adaptor = nn.Linear(option_dim, option_dim // 2)
             self.option_addition_adaptor = nn.Linear(option_dim, option_dim // 2)
-
-            # option_addition_transformer_args = {'state_dim': state_dim,
-            #                            'lang_dim': lang_dim,
-            #                            'option_dim': option_dim,
-            #                            'hidden_size': option_transformer.hidden_size,
-            #                            'max_length': option_transformer.max_length,
-            #                            'max_ep_len': option_transformer.max_ep_len,
-            #                            'n_layer': option_transformer.n_layer,
-            #                            'n_head': option_transformer.n_head,
-            #                            'n_inner': 4*option_transformer.hidden_size,
-            #                            'activation_function': option_transformer.activation_function,
-            #                            'n_positions': option_transformer.n_positions,
-            #                            'resid_pdrop': option_transformer.dropout,
-            #                            'attn_pdrop': option_transformer.dropout,
-            #                            'output_attentions': True,  # option_transformer.output_attention,
-            #                            'add_cross_attention': True,
-            #                            }
-            # self.option_addition_dt = OptionTransformer(**option_addition_transformer_args)
 
             self.alpha = nn.Parameter(torch.logit(torch.tensor(1.0)))  # learnable alpha for the linear combination of options
             
@@ -136,15 +149,29 @@ class OptionSelector(nn.Module):
     def forward(self, word_embeddings, states, timesteps=None, attention_mask=None, **kwargs):
         if self.method == 'traj_option':
             dt_ret = self.option_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
+
             option_preds = dt_ret[0]
             option_addition_preds = dt_ret[1]
+            attention_weights = dt_ret[2]  # shape: [batch_size, num_heads, query_len, key_len]
             state_embeddings = dt_ret[3]
-            option_preds = option_preds[:, ::self.horizon, :]
-            option_addition_preds = option_addition_preds[:, ::self.horizon, :]
 
-            # add_dt_ret = self.option_addition_dt(word_embeddings, states, timesteps, attention_mask, self.Z.codebook)
-            # option_addition_preds = add_dt_ret[0]
-            # option_addition_preds = option_addition_preds[:, ::self.horizon, :]
+            if self.training and self.horizon > 1:
+                start = torch.randint(low=0, high=self.horizon, size=(1,), device=states.device).item()
+            else:
+                start = 0
+
+            option_preds = option_preds[:, start::self.horizon, :]
+            option_addition_preds = option_addition_preds[:, start::self.horizon, :]
+            attention_weights = attention_weights[:, :, start::self.horizon, :].mean(dim=1) 
+
+            if self.training:
+                sim_logits_main = _sim_logits(self.Z, option_preds)             # [B, T, C]
+                coverage_loss_main = _column_coverage_loss_from_logits(sim_logits_main, tau=0.7)
+
+                # 如果也想约束 addition 分支（可选）
+                sim_logits_add  = _sim_logits(self.cross_attn_Z, option_addition_preds)
+                coverage_loss_add = _column_coverage_loss_from_logits(sim_logits_add, tau=0.7)
+
         else:
             ret_state_embeddings = self.embed_state(states).clone().detach()
             horizon_states = states[:, ::self.horizon, :]
@@ -157,58 +184,26 @@ class OptionSelector(nn.Module):
 
             state_embeddings = ret_state_embeddings
 
-        # if self.use_vq:
-        #     options, indices, commitment_loss = self.Z(option_preds)
-        #     entropies = entropy(self.Z.codebook, options, self.Z.project_in(option_preds))
-        # else:
-        #     # TODO: For now simply return the first dim of option
-        #     options, indices = option_preds, option_preds[:, :, 0]
-        #     commitment_loss = None
-        #     entropies = None
-
         # attention_temperature = 0.01
         if self.use_vq:
-            # # marginal_entropy, cond_entropy = None, None
-            # if option_attentions is not None:
-            #     #shape: [batch_size, num_heads, query_len, key_len]
-            #     num_tokens = word_embeddings.shape[1]  # number of tokens in the input sequence
-            #     traj_attentions = option_attentions[:, :, num_tokens:, :]
-
-            #     # traj_attentions = traj_attentions.mean(dim=1)  # average over heads
-            #     traj_attentions = traj_attentions.sum(dim=1)  # sum over heads
-            #     traj_attentions = traj_attentions[:, ::self.horizon, :]  # shape: [batch_size, seq_len // horizon, codebook_size]
-                
-            #     # mean = traj_attentions.mean(dim=-1, keepdim=True)  # shape: [batch_size, seq_len // horizon, 1]
-            #     # std = traj_attentions.std(dim=-1, keepdim=True) 
-            #     # traj_attentions = (traj_attentions - mean) / (std + 1e-6)  # normalize the attention scores
-
-            #     # traj_attentions = F.softmax(traj_attentions / attention_temperature, dim=-1)  # apply softmax to get
-            #     traj_attentions = F.softmax(traj_attentions, dim=-1)  # apply softmax again to ensure the distribution is valid
-
-            #     # shape: [codebook_size]
-            #     # soft_counts = traj_attentions.sum(dim=(0, 1))  
-            #     soft_counts = traj_attentions.reshape(-1, traj_attentions.shape[-1])
-            #     # num_samples = traj_attentions.shape[0] * traj_attentions.shape[1]
-
-            #     # cond_probs = traj_attentions + 1e-9
-            #     # probs = cond_probs.mean(dim=(0, 1))
-            #     # marginal_entropy = (-torch.log2(probs) * probs).sum()
-            #     # cond_entropy = (-torch.log2(cond_probs) * cond_probs).sum(dim=-1).mean()  # entropy of the attention distribution
-
-            # _, _, commitment_loss = self.Z(option_preds, soft_counts=soft_counts)
             options_vq, indices, commitment_loss = self.Z(option_preds)
             entropies = entropy(self.Z.codebook, options_vq, self.Z.project_in(option_preds))
 
-            options_addition, indices_addtion, commitment_loss_addition = self.Z_cross_attn(option_addition_preds)
-            entropies_additon = entropy(self.Z_cross_attn.codebook, options_addition, self.Z_cross_attn.project_in(option_addition_preds))
+            options_addition, indices_addtion, commitment_loss_addition = self.cross_attn_Z(option_addition_preds)
+            entropies_additon = entropy(self.cross_attn_Z.codebook, options_addition, self.cross_attn_Z.project_in(option_addition_preds))
 
             # alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
             # options = alpha * option_addition_preds + (1 - alpha) * options_vq
 
             options = torch.cat([self.option_adaptor(options_vq), self.option_addition_adaptor(options_addition)], dim=-1)
-                # 更新 commitment_loss
+            # 更新 commitment_loss
             commitment_loss = commitment_loss + commitment_loss_addition * 0.1  # 使用不同的权重
             entropies = (entropies[0] + 0.1 * entropies_additon[0], entropies[1] + 0.1 * entropies_additon[1])
+
+            if self.training:
+                lambda_cov_main = 0.2   # 建议从 0.1~0.3 试
+                lambda_cov_add  = 0.05  # addition 分支给小一点或先关掉
+                commitment_loss = commitment_loss + lambda_cov_main * coverage_loss_main + lambda_cov_add * coverage_loss_add
 
             # indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)
@@ -218,7 +213,7 @@ class OptionSelector(nn.Module):
             commitment_loss = None
             entropies = None
 
-        return options, indices, commitment_loss, entropies, state_embeddings
+        return options, indices, attention_weights, commitment_loss, entropies, state_embeddings
 
     def get_option(self, word_embeddings, states, timesteps=None, **kwargs):
 
@@ -234,6 +229,7 @@ class OptionSelector(nn.Module):
                 states = states.reshape(1, -1, self.state_dim)
             timesteps = timesteps.reshape(1, -1)
             max_length = self.option_dt.max_length
+            # max_length = self.horizon
 
             if max_length is not None:
                 states = states[:, -max_length:]
@@ -251,12 +247,12 @@ class OptionSelector(nn.Module):
                 attention_mask = None
                 raise ValueError('Attention mask should not be none')
 
-            options, option_indx, _, _, _ = self.forward(
+            options, option_indx, soft_idx, _, _, _ = self.forward(
                 word_embeddings, states, timesteps, attention_mask=attention_mask, **kwargs)
         else:
             states = states[:, ::self.horizon, :]
-            options, option_indx, _, _, _ = self.forward(
+            options, option_indx, soft_idx, _, _, _ = self.forward(
                 word_embeddings, states, None, attention_mask=None, **kwargs)
 
-        return options[0, -1], option_indx[0, -1]
+        return options[0, -1], option_indx[0, -1], soft_idx[0, -1]
         # return options[0, -1], option_indx[-1]

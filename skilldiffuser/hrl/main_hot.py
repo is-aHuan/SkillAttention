@@ -1,4 +1,4 @@
-import pdb
+import ddp_patch
 import sys
 
 try:
@@ -17,12 +17,14 @@ import torch.distributed as dist
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+import logging
 import wandb
 import datetime
 import time
 import ast
 import hydra
 import random
+
 from omegaconf import DictConfig, OmegaConf
 from transformers import DistilBertTokenizer
 from torch.utils.data import DataLoader
@@ -33,6 +35,36 @@ from difftrainer import DiffTrainer
 import diffuser.utils as diffutils
 from omegaconf import open_dict
 from inferencer.robobrain_planner import RoboBrainPlanner
+
+def create_global_logger(log_file=None, log_level=logging.INFO):
+    """创建全局 logger，只有 rank 0 输出"""
+    is_ddp = dist.is_available() and dist.is_initialized()
+    global_rank = dist.get_rank() if is_ddp else 0
+    logger = logging.getLogger('main')  # 使用固定名称
+    
+    if logger.handlers:
+        logger.handlers.clear()
+        
+    logger.setLevel(log_level if global_rank == 0 else logging.ERROR)
+    formatter = logging.Formatter('%(asctime)s  %(levelname)5s  %(message)s')
+
+    console = logging.StreamHandler()
+    console.setLevel(log_level if global_rank == 0 else logging.ERROR)
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+    if log_file is not None:
+        file_handler = logging.FileHandler(filename=log_file)
+        file_handler.setLevel(log_level if global_rank == 0 else logging.ERROR)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.propagate = False
+    return logger
+
+def init_logger():
+    global logger
+    logger = create_global_logger()
 
 def build_train_dataset_and_loader(args, device, batch_size):
     """
@@ -102,6 +134,7 @@ def build_train_dataset_and_loader(args, device, batch_size):
         sampler=train_sampler
     )
     return train_dataset, train_loader, train_sampler
+
 
 def evaluate(cfg):
     # load saved arguments
@@ -468,9 +501,18 @@ def train(args):
     exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
-    # with open_dict(args.train_dataset):
-    #     args.train_dataset.expert_location = '/home/lyh/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl'
 
+    is_ddp = dist.is_available() and dist.is_initialized()
+    global_rank = dist.get_rank() if is_ddp else 0
+    world_size = dist.get_world_size() if is_ddp else 1
+    num_gpus = torch.cuda.device_count()
+    local_rank = int(os.environ.get("LOCAL_RANK", -1)) if is_ddp else 0
+
+    print("rank: %d, world_size: %d" % (global_rank, world_size))
+    print("local_rank: %d, num_gpus: %d" % (local_rank, num_gpus))
+
+    wandb_logger = logging.getLogger("wandb")
+    wandb_logger.setLevel(logging.INFO)
     if args.wandb:
         # os.environ["WANDB_MODE"] = "offline"
         wandb.init(
@@ -497,7 +539,6 @@ def train(args):
     )
     # ==== 替换结束 ====
 
-
     print('=' * 50)
     total_timesteps = int(train_dataset.trajectories["lengths"].sum())  # memmap/内存模式都可用
     print(f'Starting new experiment: {args.env.name} {args.train_dataset.num_trajectories}')
@@ -517,6 +558,7 @@ def train(args):
             env_name = args.env.eval_env
         else:
             env_name = args.env.name
+        # print(f'-->Testing on {env_name}')
         print(f'-->Testing on {env_name}')
 
         env = gym.make(env_name)
@@ -536,6 +578,7 @@ def train(args):
     if 'BabyAI' in args.env.name:
         state_dim += 4*args.env.use_direction
 
+    # print(f'--> Train episode max length: {train_dataset.max_length}')
     print(f'--> Train episode max length: {train_dataset.max_length}')
     if args.method == 'traj_option':
         args.option_selector.option_transformer.max_length = int(train_dataset.max_length)
@@ -773,7 +816,7 @@ def train(args):
         # pdb.set_trace()
         state_dict = {k:v for k,v in checkpoint.items() if k.startswith('option_selector.Z')}
         loaded = model.load_state_dict(state_dict, strict=False)
-        assert loaded.unexpected_keys == []   ## simple check
+        # assert loaded.unexpected_keys == []   ## simple check
         if args.freeze_loaded_options:
             for name, param in model.named_parameters():
                 if name.startswith('option_selector.Z'):
@@ -789,11 +832,6 @@ def train(args):
     #     for name, param in model.named_parameters():
     #         if not name.startswith('diffuser.'):
     #             param.requires_grad = False
-
-    is_ddp = dist.is_available() and dist.is_initialized()
-    global_rank = dist.get_rank() if is_ddp else 0
-    local_rank = int(os.environ.get("LOCAL_RANK", -1)) if is_ddp else -1
-    is_main_process = (global_rank == 0)
 
     # ===== 包装模型 =====
     if is_ddp:
@@ -898,6 +936,8 @@ def main(cfg: DictConfig):
 
     if 'cuda' in args.trainer.device and os.environ.get('LOCAL_RANK') is not None:
         torch.distributed.init_process_group(backend='nccl')
+    
+    # init_logger()
 
     device = torch.device(args.trainer.device)
     if device.type == 'cuda' and torch.cuda.is_available() and args.cuda_deterministic:
@@ -906,7 +946,7 @@ def main(cfg: DictConfig):
     elif device.type == 'cuda' and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    print("--> Running in ", os.getcwd())
+    # logger.info("--> Running in ", os.getcwd())
 
     if args.eval:
         evaluate(cfg)

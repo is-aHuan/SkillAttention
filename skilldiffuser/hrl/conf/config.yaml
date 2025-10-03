@@ -21,7 +21,7 @@ render: False  # False
 render_path: ./eval_${env.name}/
 
 batch_size: 2  # 512
-max_iters: 241  # TODO
+max_iters: 400  # TODO
 warmup_steps: 2500 # 5000
 
 lr_decay: 0.1
@@ -71,7 +71,7 @@ iq:
 
 # Extra args
 log_interval: 1  # Log every this many iterations
-save_interval: 30 # Save networks every this many iterations
+save_interval: 50 # Save networks every this many iterations
 hydra_base_dir: "/home/lyh/data_folder/skdif_tune_outputs"
 exp_name: 'test_skdif'
 project_name: ${env.name}

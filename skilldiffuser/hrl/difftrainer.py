@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import copy
 from diffuser.utils.training import EMA
-from ml_logger import logger
+from ml_logger import logger as ml_logger
 import os
 import torch.nn as nn
 import torch.distributed as dist
@@ -26,6 +26,8 @@ class DiffTrainer(nn.Module):
         self.save_checkpoints = diff_trainer_args['save_checkpoints']
         self.step_start_ema = 2000
 
+        self.is_main = (not dist.is_available()) or (not dist.is_initialized()) or (dist.get_rank() == 0)
+
         self.log_freq = diff_trainer_args['log_freq']
         self.sample_freq = diff_trainer_args['sample_freq']
         self.save_freq = diff_trainer_args['save_freq']
@@ -43,8 +45,9 @@ class DiffTrainer(nn.Module):
 
         self.device = diff_trainer_args['train_device']
 
-        logger.configure(args.hydra_base_dir,
-                         prefix=f"diffuser_log")
+        if self.is_main:
+            ml_logger.configure(args.hydra_base_dir,
+                            prefix=f"diffuser_log")
         # self.model = self.model.to(device=self.device)  # TODO
         # self.ema_model = self.ema_model.to(device=self.device)
 
@@ -104,11 +107,16 @@ class DiffTrainer(nn.Module):
 
         if self.step % self.log_freq == 0:
             infos_str = ' | '.join([f'{key}: {val:8.4f}' for key, val in infos.items()])
-            logger.print(f'{self.step}: {loss:8.4f} | {infos_str}')
+
+            if self.is_main:
+                ml_logger.print(f'{self.step}: {loss:8.4f} | {infos_str}')
+
             metrics = {k: v.detach().item() for k, v in infos.items()}
             metrics['steps'] = self.step
             metrics['loss'] = loss.detach().item()
-            logger.log_metrics_summary(metrics, default_stats='mean')
+
+            if self.is_main:
+                ml_logger.log_metrics_summary(metrics, default_stats='mean')
 
         # if self.step == 0 and self.sample_freq:
         #     self.render_reference(self.n_reference)
@@ -134,24 +142,26 @@ class DiffTrainer(nn.Module):
             'model': self.model.state_dict(),
             'ema': self.ema_model.state_dict()
         }
-        savepath = os.path.join(self.bucket, logger.prefix, 'checkpoint')
+        savepath = os.path.join(self.bucket, ml_logger.prefix, 'checkpoint')
         os.makedirs(savepath, exist_ok=True)
-        # logger.save_torch(data, savepath)
+        # ml_logger.save_torch(data, savepath)
         if self.save_checkpoints:
             savepath = os.path.join(savepath, f'state_{self.step}.pt')
         else:
             savepath = os.path.join(savepath, 'state.pt')
         torch.save(data, savepath)
-        logger.print(f'[ utils/training ] Saved model to {savepath}')
+
+        if self.is_main:
+            ml_logger.print(f'[ utils/training ] Saved model to {savepath}')
 
     def load(self, loadpath):
         '''
             loads model and ema from disk
         '''
-        # loadpath = os.path.join(self.bucket, logger.prefix, f'checkpoint/state.pt')
-        # data = logger.load_torch(loadpath)
+        # loadpath = os.path.join(self.bucket, ml_logger.prefix, f'checkpoint/state.pt')
+        # data = ml_logger.load_to_torch(loadpath)
         # data = torch.load(loadpath, map_location=device)
-        data = torch.load(loadpath)
+        data = torch.load(loadpath, weights_only=True)
 
         # self.step = data['step']
         self.model.load_state_dict(data['model'])
