@@ -1,0 +1,48 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Debug HRL Train",
+            "type": "debugpy",
+            // "cwd": "${fileDirname}",
+            "request": "launch",
+            "program": "${workspaceFolder}/skilldiffuser/hrl/main_hot.py",
+            "console": "integratedTerminal",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "WANDB_MODE": "offline"
+            },
+            "args": [
+                "env=lorel_sawyer_obs",
+                "method=traj_option",
+                "dt.n_layer=1",
+                "dt.n_head=1",
+                "option_selector.option_transformer.n_layer=1",
+                "option_selector.option_transformer.n_head=1",
+                "option_selector.commitment_weight=0.1",
+                "option_selector.option_transformer.hidden_size=2",
+                "option_selector.num_options=2",
+                "dt.hidden_size=2",
+                "option_dim=4",
+                "codebook_dim=4",
+                "diffuser.dim=4",
+                "diffuser.dim_mults='(1, 2, 4)'",
+                "batch_size=1",
+                "seed=1",
+                "eval=False",
+                "render=False",
+                "warmup_steps=5000",
+                "resume=False",
+                "trainer.eval_every=1",
+                // "model.horizon=4",
+                // "model.K=4",
+                "train_dataset.num_trajectories=3",
+                "savepath=/home/lyh/Data/lorel/may_08_sawyer_50k",
+                "train_dataset.expert_location=/home/lyh/Data/lorel/may_08_sawyer_50k/prep_data_first_200.pkl"
+            ]
+        },
+    ]
+}

@@ -21,7 +21,7 @@ render: False  # False
 render_path: ./eval_${env.name}/
 
 batch_size: 2  # 512
-max_iters: 400  # TODO
+max_iters: 200  # TODO
 warmup_steps: 2500 # 5000
 
 lr_decay: 0.1

@@ -201,8 +201,8 @@ class OptionSelector(nn.Module):
             entropies = (entropies[0] + 0.1 * entropies_additon[0], entropies[1] + 0.1 * entropies_additon[1])
 
             if self.training:
-                lambda_cov_main = 0.2   # 建议从 0.1~0.3 试
-                lambda_cov_add  = 0.05  # addition 分支给小一点或先关掉
+                lambda_cov_main = 0.5   # 建议从 0.1~0.3 试
+                lambda_cov_add  = 0.2   # addition 分支给小一点或先关掉
                 commitment_loss = commitment_loss + lambda_cov_main * coverage_loss_main + lambda_cov_add * coverage_loss_add
 
             # indices = soft_counts

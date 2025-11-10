@@ -1,4 +1,4 @@
 outputs
-.vscode
-
 skilldiffuser/memmap
+
+.vscode/sftp.json

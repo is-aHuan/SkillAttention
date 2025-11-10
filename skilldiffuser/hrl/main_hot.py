@@ -807,8 +807,8 @@ def train(args):
     else:
         model = model.to(device) # 先将模型移到指定设备
         
-    if ".pt" in args.diffuser.loadpath:
-        model.diff_trainer.load(args.diffuser.loadpath)
+    # if ".pt" in args.diffuser.loadpath:
+    #     model.diff_trainer.load(args.diffuser.loadpath)
 
     if args.load_options:
         checkpoint = torch.load(args.checkpoint_path)
@@ -822,6 +822,8 @@ def train(args):
                 if name.startswith('option_selector.Z'):
                     param.requires_grad = False
             assert not model.option_selector.Z.project_out.bias.requires_grad   ## simple check
+    
+    model.count_parameters()
 
     # if args.load_frozen:
     #     checkpoint = torch.load(args.checkpoint_path)
@@ -843,7 +845,6 @@ def train(args):
         )
     elif args.parallel and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
-        
 
     # Setting up the optimizer
     params = [(k, v) for k, v in model.named_parameters() if v.requires_grad]

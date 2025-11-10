@@ -279,3 +279,7 @@ class HRLModel(nn.Module, IQMixin):
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.scheduler.load_state_dict(checkpoint['scheduler'])
         return {'iter_num': checkpoint['iter_num'], 'train_dataset_max_length': checkpoint['train_dataset_max_length'], 'config': checkpoint['config']}
+
+    def count_parameters(self):
+        total_num = sum(p.numel() for p in self.parameters())
+        print(f'Total Parameters: {total_num / 1e9:.2f}B')
