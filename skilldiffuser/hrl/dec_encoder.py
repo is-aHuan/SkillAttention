@@ -87,8 +87,8 @@ class DecEncoder(TrajectoryModel):
         # if use_language:
         #     self.embed_lang = nn.Linear(lang_dim, hidden_size)
 
-        self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
-        # self.embed_ln = nn.LayerNorm(hidden_size)
+        # self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)  # TODO
+        self.embed_ln = nn.LayerNorm(hidden_size)
         # if kwargs['eval'] == True:
         #     self.embed_ln = nn.LayerNorm(hidden_size  + self.act_dim)
         # else:
@@ -105,120 +105,30 @@ class DecEncoder(TrajectoryModel):
         if predict_q:
             self.predict_q = torch.nn.Linear(hidden_size, self.act_dim)
 
-    def encode(self, states, actions, timesteps, options=None, state_embeddings=None, attention_mask=None):
+    def encode(self, actions, options=None, state_embeddings=None):
+        assert options is not None
+        option_embeddings = options  # TODO  no operation here
+        option_embeddings = torch.mean(option_embeddings, dim=1)
 
-        # batch_size, seq_length = states.shape[0], states.shape[1]
-
-        # if attention_mask is None:
-        #     raise ValueError('Should not have attention_mask NONE')
-            # attention mask for GPT: 1 if can be attended to, 0 if not
-            # attention_mask = torch.ones((batch_size, seq_length), dtype=torch.long)
-
-        if self.use_options:
-            assert options is not None
-            # option_embeddings = self.embed_option(options)
-            option_embeddings = options  # TODO  no operation here
-            option_embeddings = torch.mean(option_embeddings, dim=1)
-            # time_embeddings = self.embed_timestep(timesteps)
-
-            # time embeddings are treated similar to positional embeddings (TODO: Done during diffusion)
-            # option_embeddings = option_embeddings + time_embeddings
-
-            # if self.no_states:
-            #     # IMP: MAKE SURE THIS IS NOT SET ON BY DEFAULT
-            #     state_embeddings = self.embed_state(torch.zeros_like(states))
-            # else:
-            #     state_embeddings = self.embed_state(states)
-            #     # state_embeddings = state_embeddings + time_embeddings
-
-            if self.no_actions:
-                # IMP: MAKE SURE THIS IS NOT SET ON BY DEFAULT
-                # action_embeddings = self.embed_action(torch.zeros_like(actions))
-                actions = torch.zeros_like(actions)
-            # else:
-            #     # action_embeddings = self.embed_action(actions)
-            #     # action_embeddings = action_embeddings + time_embeddings
-            #     pass
-
-            # this makes the sequence look like (o1, s1, a1,o2, s2, a2, ...)
-            # which works nice in an autoregressive sense since states predict actions
-            # note that o1 and o2 need not be different
-            # stacked_inputs = torch.stack(
-            #     (action_embeddings, state_embeddings, option_embeddings),
-            #     dim=1).permute(
-            #     0, 2, 1, 3).reshape(
-            #     batch_size, 3 * seq_length, self.hidden_size)
-
-            # if self.embed_ln
-
-            # state_embeddings = self.embed_ln(state_embeddings)
-
-            # stacked_inputs = torch.cat((actions, state_embeddings), dim=2)   # (B, seq_length, )
-
-            # LAYERNORM
-            # stacked_inputs = self.embed_ln(stacked_inputs)  # TODO  Very Important
-
-            if self.embed_ln.normalized_shape[-1] == self.hidden_size:
-                state_embeddings = self.embed_ln(state_embeddings)
-                stacked_inputs = torch.cat((actions, state_embeddings), dim=2)  
-
-            else:
-                stacked_inputs = self.embed_ln(torch.cat((actions, state_embeddings), dim=2)) 
-                # state_embeddings = self.embed_ln(state_embeddings)
-
-                # stacked_inputs = torch.cat((actions, state_embeddings), dim=2)   # (B, seq_length, )
-
-            # # to make the attention mask fit the stacked inputs, have to stack it as well
-            # stacked_attention_mask = torch.stack(
-            #     (attention_mask, attention_mask, attention_mask), dim=1
-            # ).permute(0, 2, 1).reshape(batch_size, 3 * seq_length)
-            outputs = {'stacked_inputs': stacked_inputs,
-                       'option_embeddings': option_embeddings,
-                       }
-
-            return outputs
+        if self.embed_ln.normalized_shape[-1] == self.hidden_size:
+            state_embeddings = self.embed_ln(state_embeddings)
+            stacked_inputs = torch.cat((actions, state_embeddings), dim=2)  
 
         else:
-            raise NotImplementedError
+            stacked_inputs = self.embed_ln(torch.cat((actions, state_embeddings), dim=2)) 
+            # state_embeddings = self.embed_ln(state_embeddings)
+            # stacked_inputs = torch.cat((actions, state_embeddings), dim=2)   # (B, seq_length, )
 
-            # we feed in the input embeddings (not word indices as in NLP) to the model
-            # transformer_outputs = self.transformer(
-            #     inputs_embeds=stacked_inputs,
-            #     attention_mask=stacked_attention_mask,
-            # )
-            # x = transformer_outputs['last_hidden_state']
+        outputs = {'stacked_inputs': stacked_inputs,
+                    'option_embeddings': option_embeddings,
+                    }
+        return outputs
 
-            # reshape x so that the second dimension corresponds to the original
-            # options (1), states (2) or actions (0); i.e. x[:,0,t] is the token for s_t
-            # traj_out = x.reshape(batch_size, seq_length, 3, self.hidden_size).permute(0, 2, 1, 3)  # TODO
-
-            # for step in range(n_train_steps):
-            #     for i in range(self.gradient_accumulate_every):
-                    # batch[0] ([32,192,6])
-                    # batch[1] conditions  ([32,4]) * 2
 
     def decode(self, traj_out):
         if self.use_options:
-            # get predictions
-            # predict next state given option, state and action. skip the last state for prediction
-            if isinstance(self.state_dim, int):
-                state_preds = self.predict_state(traj_out[:, :, self.act_dim:])[:, :-1, :]
-            else:
-                state_preds = None
-            # predict next action given state and option
-            # action_preds = self.predict_action(traj_out[:, 0])
             action_preds = traj_out[:, :, :self.act_dim]
-
-            # reconstruct current option given current option
-            # if self.option_il:
-            #     option_preds = self.predict_option(traj_out[:, :, self.act_dim+self.state_dim:])
-            #     options_loss = F.mse_loss(option_preds, options.detach())
-            # else:
-            #     options_loss = None
-
-            outputs = {'state_preds': state_preds,
-                       'action_preds': action_preds,
-                       'options_loss': None}
+            outputs = {'action_preds': action_preds,}
 
             if self.predict_q:
                 # predict next Q given state and option   ## IMP: Don't use current action
@@ -226,66 +136,6 @@ class DecEncoder(TrajectoryModel):
                 outputs.update({'q_preds': q_preds})
 
             return outputs
-
-        # if self.use_language:
-        #     assert word_embeddings is not None
-        #     num_tokens = word_embeddings.shape[1]
-        #     state_embeddings = self.embed_state(states)
-        #     lang_embeddings = self.embed_lang(word_embeddings)
-        #     action_embeddings = self.embed_action(actions)
-        #     time_embeddings = self.embed_timestep(timesteps)
-        #
-        #     # time embeddings are treated similar to positional embeddings
-        #     state_embeddings = state_embeddings + time_embeddings
-        #     action_embeddings = action_embeddings + time_embeddings
-        #
-        #     stacked_inputs = torch.stack(
-        #         (state_embeddings, action_embeddings),
-        #         dim=1).permute(
-        #         0, 2, 1, 3).reshape(
-        #         batch_size, 2 * seq_length, self.hidden_size)
-        #     lang_and_inputs = torch.cat([lang_embeddings, stacked_inputs], dim=1)
-        #     # LAYERNORM AFTER LANGUAGE
-        #     stacked_inputs = self.embed_ln(lang_and_inputs)
-        #
-        #     # to make the attention mask fit the stacked inputs, have to stack it as well
-        #     stacked_attention_mask = torch.stack(
-        #         (attention_mask, attention_mask), dim=1
-        #     ).permute(0, 2, 1).reshape(batch_size, 2*seq_length)
-        #     lang_attn_mask = torch.cat(
-        #         [torch.ones((batch_size, num_tokens), device=states.device), stacked_attention_mask], dim=1)
-        #
-        #     # we feed in the input embeddings (not word indices as in NLP) to the model
-        #     transformer_outputs = self.transformer(
-        #         inputs_embeds=stacked_inputs,
-        #         attention_mask=lang_attn_mask,
-        #     )
-        #     x = transformer_outputs['last_hidden_state']
-        #
-        #     # reshape x so that the second dimension corresponds to the original
-        #     # states (0), or actions (1); i.e. x[:,0,t] is the token for s_t
-        #     lang_out = x[:, :num_tokens, :].reshape(
-        #         batch_size, num_tokens, 1, self.hidden_size).permute(0, 2, 1, 3)
-        #     traj_out = x[:, num_tokens:, :].reshape(
-        #         batch_size, seq_length, 2, self.hidden_size).permute(0, 2, 1, 3)
-        #
-        #     # get predictions
-        #     # predict state given state, action. skip the last prediction
-        #     if isinstance(self.state_dim, int):
-        #         state_preds = self.predict_state(traj_out[:, 1])[:, :-1, :]
-        #     else:
-        #         state_preds = None
-        #     action_preds = self.predict_action(traj_out[:, 0])  # predict next action given state
-        #
-        #     outputs = {'state_preds': state_preds,
-        #                'action_preds': action_preds}
-        #
-        #     if self.predict_q:
-        #         # predict next Q given state   ## IMP: Don't use current action
-        #         q_preds = self.predict_q(traj_out[:, 0])
-        #         outputs.update({'q_preds': q_preds})
-        #
-        #     return outputs
 
     def get_action(self, states, actions, timesteps, options=None, embed_state=None, word_embeddings=None, **kwargs):
 
@@ -299,6 +149,7 @@ class DecEncoder(TrajectoryModel):
             actions = actions.reshape(1, -1, self.act_dim)
             timesteps = timesteps.reshape(1, -1)
 
+            # self.max_length = 32
             if self.max_length is not None:
                 states = states[:, -self.max_length:]
                 options = options[:, -self.max_length:]

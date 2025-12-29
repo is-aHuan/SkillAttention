@@ -51,14 +51,14 @@ class Trainer:
         entropies, lang_entropies, mutual_info = [], [], []
         logs = dict()
 
-        if iter_num == 1:
-            eval_start = time.time()
+        # if iter_num == 1:
+        #     eval_start = time.time()
 
-            self.model.eval()
-            eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
-            for k, v in eval_outputs.items():
-                logs[f'evaluation/{k}'] = v
-            logs['time/evaluation'] = time.time() - eval_start
+        #     self.model.eval()
+        #     eval_outputs = self.evaluate(iter_num, render=eval_render, render_path=self.args.render_path)
+        #     for k, v in eval_outputs.items():
+        #         logs[f'evaluation/{k}'] = v
+        #     logs['time/evaluation'] = time.time() - eval_start
 
         train_start = time.time()
         
@@ -76,14 +76,6 @@ class Trainer:
         
         ind = 0
         for langs, states, actions, timesteps, dones, attention_mask in tqdm(self.train_loader):
-            # subtask_list = []
-            # for i in range(len(langs)):
-            #     task = langs[i]
-            #     image = states[i, 0]
-            #     subtask_list.append(self.planner.decompose_task(task, image))
-
-            # step_indexs = [0] * len(langs)  # Initialize with zeros
-            # langs_input = [subtask_list[i][step_indexs[i]] for i in range(len(langs))]  # Get the first step of each task
             lm_input = self.tokenizer(text=langs, add_special_tokens=True,
                                       return_tensors='pt', padding=True).to(self.device)
         
@@ -91,8 +83,8 @@ class Trainer:
                 # Pad sequences to allows reshape
                 K = self.K
                 B, L = states.shape[0], states.shape[1]
-                # num_seq = (L // K + 1)
-                num_seq = (L + K - 1) // K
+                num_seq = (L // K + 1)
+                # num_seq = (L + K - 1) // K
                 padded_length = num_seq * K
         
                 # This ensures the DT only looks at chunks of size horizon
@@ -101,52 +93,27 @@ class Trainer:
                 timesteps = pad(timesteps, padded_length)
                 dones = pad(dones, padded_length)
                 attention_mask = pad(attention_mask, padded_length)
-
-            # states = states.reshape(B*num_seq, -1, *states.shape[2:])
-            # actions = actions.reshape(B*num_seq, -1, *actions.shape[2:])
-            # timesteps = timesteps.reshape(B*num_seq, -1)
-            # dones = dones.reshape(B*num_seq, -1)
-            # attention_mask = attention_mask.reshape(B*num_seq, -1)
         
             action_target = torch.clone(actions).detach()
             state_target = torch.clone(states).detach()
-
-            if discrete:
-                actions = F.one_hot(actions.long(), act_dim)
         
             states = states.float().to(self.device)
             actions = actions.float().to(self.device)
             timesteps = timesteps.long().to(self.device)
             dones = dones.long().to(self.device)
             attention_mask = attention_mask.long().to(self.device)
-            if discrete:
-                action_target = action_target.long().to(self.device)
-            else:
-                action_target = action_target.float().to(self.device)
-            state_target = state_target.float().to(self.device)
 
-            # total_loss = 0.0
-            # for k_step in range(num_seq):
-            #     # Get the current step for each task
-            #     langs_input = [subtask_instructions[i][step_indexs[i]] for i in range(B)]
-            #     lm_input = self.tokenizer(text=langs_input, add_special_tokens=True,
-            #                               return_tensors='pt', padding=True).to(self.device)
-            
-            # sub_langs_input = [subtask_instructions[i][j] for i in range(B) for j in range(len(subtask_instructions[i]))]
-            # sub_lm_input = self.tokenizer(text=sub_langs_input, add_special_tokens=True,
-            #                           return_tensors='pt', padding=True).to(self.device)
+            action_target = action_target.float().to(self.device)
+            state_target = state_target.float().to(self.device)
         
             # TODO: Pay attention here!
             num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)
             diff_train_num = max(num_diff_steps // len(self.train_loader), 1)
             outputs = self.model(lm_input['input_ids'], lm_input['attention_mask'],
-                                #  sub_lm_input['input_ids'], sub_lm_input['attention_mask'],
                                  states, actions, timesteps, iter_num=iter_num, ind=ind,
                                  diff_train_num=diff_train_num, attention_mask=attention_mask,)
         
-            state_preds, action_preds = outputs['dt']['state_preds'], outputs['dt']['action_preds']
-            state_rc_preds, state_rc_targets = outputs['state_rc']
-            lang_rc_preds, lang_rc_targets = outputs['lang_rc']
+            action_preds = outputs['dt']['action_preds']
             commitment_loss = outputs['commitment_loss']
             diff_loss = outputs['diff_loss']
             diff_loss = diff_loss.mean()
@@ -156,64 +123,23 @@ class Trainer:
             else:
                 entropy = None
                 lang_entropy = None
-        
-            if commitment_loss is None:
-                commitment_loss = torch.zeros([])
+
             commitment_loss = commitment_loss.mean()
-        
-            if entropy is None:
-                entropy = torch.zeros([])
-                lang_entropy = torch.zeros([])
             entropy = entropy.mean()
             lang_entropy = lang_entropy.mean()
         
             act_dim = action_preds.shape[-1]
             B = action_preds.shape[0]
-            if self.state_il:
-                state_dim = state_preds.shape[-1]
+
             action_preds = action_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
-            if discrete:
-                action_target = action_target.reshape(-1)[attention_mask.reshape(-1) > 0]
-            else:
-                action_target = action_target.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
+            action_target = action_target.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
         
             attention_mask = attention_mask.reshape(B, -1)
-            # Pad extra zero to mask for target state prediction to ignore s_0
-            target_attention_mask = torch.cat(
-                [torch.zeros(B, 1).to(self.device), attention_mask[:, :-1]], axis=-1)
-            # Pred states are from s1, ... s_T (ignoring s_T+1). We remove the last element of the mask to get correct shapes.
-            pred_attention_mask = attention_mask[:, :-1]
-        
-            # We actually don't do this in the old DT code
-            if self.state_il:
-                state_preds = state_preds.reshape(-1,
-                                                  state_dim)[pred_attention_mask.reshape(-1) > 0]
-                state_target = state_target.reshape(-1,
-                                                    state_dim)[target_attention_mask.reshape(-1) > 0]
-        
             dones = dones.reshape(-1)[attention_mask.reshape(-1) > 0]
-            if iq:
-                q_preds = outputs['dt']['q_preds']
-                # Get q_values of next states (as the final state is unknown, we use a dummy value of q=0 for state after done=True)
-                # IQ should skip using the last q_val
-                next_q = torch.cat((q_preds[:, 1:, :], torch.zeros(
-                    [B, 1, act_dim]).to(self.device)), dim=1)
-                q_preds = q_preds.reshape(-1, act_dim)[attention_mask.reshape(-1) > 0]
-                # In this case action_preds come from the q_network
-                action_preds = model.iq_choose_action(q_preds)
-                if discrete:
-                    action_preds = F.one_hot(action_preds.long(), act_dim)
-            else:
-                q_preds, next_q = None, None
         
-            if self.state_il:
-                act_loss, state_loss = imitation_loss(
-                    action_preds, action_target, state_preds, state_target, q_preds, next_q, dones, discrete,
-                    loss_fn=model.iq_critic_loss, step=iter_num)
-            else:
-                act_loss, state_loss = imitation_loss(
-                    action_preds, action_target, None, None, q_preds, next_q, dones, discrete,
-                    loss_fn=model.iq_critic_loss, step=iter_num)
+            act_loss, state_loss = imitation_loss(
+                action_preds, action_target, None, None, None, None, dones, discrete,
+                loss_fn=model.iq_critic_loss, step=iter_num)
         
             options_loss = outputs['dt']['options_loss'] if 'options_loss' in outputs['dt'] else None
             if options_loss is None:
@@ -221,12 +147,10 @@ class Trainer:
             else:
                 options_loss = options_loss.mean()  ### because we get output from several GPUs
         
-            state_rc_loss = state_reconstruction_loss(state_rc_preds, state_rc_targets)
-            lang_rc_loss = lang_reconstruction_loss(lang_rc_preds, lang_rc_targets)
-        
             # loss = act_loss + state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss
-            loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss  # 0.001
+            # loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss  # 0.001
             # loss = state_loss + options_loss + state_rc_loss + lang_rc_loss + commitment_loss + 0.005 * diff_loss
+            loss = commitment_loss + 0.005 * diff_loss
             loss.backward()
 
             # TODO delete
@@ -238,15 +162,8 @@ class Trainer:
                 self.optimizer.zero_grad()
         
             train_losses.append(loss.detach().cpu().item())
-            if discrete:
-                action_errors.append(1 - torch.mean(
-                    (torch.argmax(action_preds, dim=1) == action_target).float()).detach().cpu().item())
             action_losses.append(act_loss.detach().cpu().item())
-            # state_losses.append(state_loss.detach().cpu().item())
-            # option_losses.append(options_loss.detach().cpu().item())
             diffuser_losses.append(diff_loss.detach().cpu().item())
-            # state_rc_losses.append(state_rc_loss.detach().cpu().item())
-            # lang_rc_losses.append(lang_rc_loss.detach().cpu().item())
             commitment_losses.append(commitment_loss.detach().cpu().item())
             entropies.append(entropy.detach().cpu().item())
             lang_entropies.append(lang_entropy.detach().cpu().item())
@@ -260,26 +177,19 @@ class Trainer:
         
         logs['time/training'] = time.time() - train_start
         
-        if iter_num % self.eval_every == 0:
-            eval_start = time.time()
+        # TODO If you evaluate in simulation, Uncomment Below!
+        # if iter_num % self.eval_every == 0:
+        #     eval_start = time.time()
         
-            self.model.eval()
-            eval_outputs = self.evaluate(iter_num, render=eval_render)
-            for k, v in eval_outputs.items():
-                logs[f'evaluation/{k}'] = v
-            logs['time/evaluation'] = time.time() - eval_start
+        #     self.model.eval()
+        #     eval_outputs = self.evaluate(iter_num, render=eval_render)
+        #     for k, v in eval_outputs.items():
+        #         logs[f'evaluation/{k}'] = v
+        #     logs['time/evaluation'] = time.time() - eval_start
         
         logs['time/total'] = time.time() - self.start_time
         logs['training/train_loss_mean'] = np.mean(train_losses)
         logs['training/train_loss_std'] = np.std(train_losses)
-
-        if discrete:
-            logs['training/action_error'] = np.mean(action_errors)
-        
-        # logs['training/state_pred_loss'] = np.mean(state_losses)
-        # logs['training/options_pred_loss'] = np.mean(option_losses)
-        # logs['training/state_rc_loss'] = np.mean(state_rc_losses)
-        # logs['training/lang_rc_loss'] = np.mean(lang_rc_losses)
 
         logs['training/diffuser_loss'] = np.mean(diffuser_losses)
         logs['training/action_pred_loss'] = np.mean(action_losses)
@@ -287,9 +197,6 @@ class Trainer:
         logs['training/entropy'] = np.mean(entropies)
         logs['training/lang_entropy'] = np.mean(lang_entropies)
         logs['training/MI'] = np.mean(entropies) - np.mean(lang_entropies)
-        # logs['training/lr'] = self.optimizer.param_groups[0]['lr']  # DT lr
-        # logs['training/lm_lr'] = self.optimizer.param_groups[1]['lr']  # Language model lr
-        # logs['training/os_lr'] = self.optimizer.param_groups[2]['lr']  # option selector lr
         
         if print_logs:
             print('=' * 80)

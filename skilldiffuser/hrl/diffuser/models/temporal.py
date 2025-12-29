@@ -197,7 +197,7 @@ class TemporalUnet(nn.Module):
             nn.Conv1d(dim, transition_dim, 1),
         )
 
-    def forward(self, x, cond, time, returns=None, use_dropout=True, force_dropout=False):
+    def forward(self, x, time, returns=None, use_dropout=True, force_dropout=False):
         '''
             x : [ batch x horizon x transition ]
             returns : [batch x horizon x 128]
@@ -230,8 +230,6 @@ class TemporalUnet(nn.Module):
         x = self.mid_block1(x, t)
         x = self.mid_block2(x, t)
 
-        # import pdb; pdb.set_trace()
-
         for resnet, resnet2, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = resnet(x, t)
@@ -250,7 +248,7 @@ class TemporalUnet(nn.Module):
         else:
             return x
 
-    def get_pred(self, x, cond, time, returns=None, use_dropout=True, force_dropout=False):
+    def get_pred(self, x, time, returns=None, use_dropout=True, force_dropout=False):
         '''
             x : [ batch x horizon x transition ]
             returns : [batch x horizon]

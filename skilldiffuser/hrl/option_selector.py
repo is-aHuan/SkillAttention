@@ -74,7 +74,7 @@ class OptionSelector(nn.Module):
             dim=option_dim,
             codebook_dim=codebook_dim,       # codebook vector size
             codebook_size=num_options,     # codebook size
-            decay=0.98,             # the exponential moving average decay, lower means the dictionary will change faster
+            decay=0.99,             # the exponential moving average decay, lower means the dictionary will change faster
             commitment_weight=commitment_weight,   # the weight on the commitment loss
             kmeans_init=kmeans_init,   # use kmeans init
             cpc=False,
@@ -155,22 +155,23 @@ class OptionSelector(nn.Module):
             attention_weights = dt_ret[2]  # shape: [batch_size, num_heads, query_len, key_len]
             state_embeddings = dt_ret[3]
 
-            if self.training and self.horizon > 1:
-                start = torch.randint(low=0, high=self.horizon, size=(1,), device=states.device).item()
-            else:
-                start = 0
+            # if self.training and self.horizon > 1:
+            #     start = torch.randint(low=0, high=self.horizon, size=(1,), device=states.device).item()
+            # else:
+            #     start = 0
 
+            start = 0
             option_preds = option_preds[:, start::self.horizon, :]
             option_addition_preds = option_addition_preds[:, start::self.horizon, :]
             attention_weights = attention_weights[:, :, start::self.horizon, :].mean(dim=1) 
 
-            if self.training:
-                sim_logits_main = _sim_logits(self.Z, option_preds)             # [B, T, C]
-                coverage_loss_main = _column_coverage_loss_from_logits(sim_logits_main, tau=0.7)
+            # if self.training:
+            #     sim_logits_main = _sim_logits(self.Z, option_preds)             # [B, T, C]
+            #     coverage_loss_main = _column_coverage_loss_from_logits(sim_logits_main, tau=0.7)
 
-                # 如果也想约束 addition 分支（可选）
-                sim_logits_add  = _sim_logits(self.cross_attn_Z, option_addition_preds)
-                coverage_loss_add = _column_coverage_loss_from_logits(sim_logits_add, tau=0.7)
+            #     # 如果也想约束 addition 分支（可选）
+            #     sim_logits_add  = _sim_logits(self.cross_attn_Z, option_addition_preds)
+            #     coverage_loss_add = _column_coverage_loss_from_logits(sim_logits_add, tau=0.7)
 
         else:
             ret_state_embeddings = self.embed_state(states).clone().detach()
@@ -192,18 +193,18 @@ class OptionSelector(nn.Module):
             options_addition, indices_addtion, commitment_loss_addition = self.cross_attn_Z(option_addition_preds)
             entropies_additon = entropy(self.cross_attn_Z.codebook, options_addition, self.cross_attn_Z.project_in(option_addition_preds))
 
-            # alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
-            # options = alpha * option_addition_preds + (1 - alpha) * options_vq
+            alpha = 0.1 * torch.sigmoid(self.alpha)  # alpha ∈ (0, 0.1)
+            options = alpha * option_addition_preds + (1 - alpha) * options_vq
 
-            options = torch.cat([self.option_adaptor(options_vq), self.option_addition_adaptor(options_addition)], dim=-1)
+            # options = torch.cat([self.option_adaptor(options_vq), self.option_addition_adaptor(options_addition)], dim=-1)
             # 更新 commitment_loss
-            commitment_loss = commitment_loss + commitment_loss_addition * 0.1  # 使用不同的权重
-            entropies = (entropies[0] + 0.1 * entropies_additon[0], entropies[1] + 0.1 * entropies_additon[1])
+            # commitment_loss = commitment_loss + commitment_loss_addition * 0.1  # 使用不同的权重
+            # entropies = (entropies[0] + 0.1 * entropies_additon[0], entropies[1] + 0.1 * entropies_additon[1])
 
-            if self.training:
-                lambda_cov_main = 0.5   # 建议从 0.1~0.3 试
-                lambda_cov_add  = 0.2   # addition 分支给小一点或先关掉
-                commitment_loss = commitment_loss + lambda_cov_main * coverage_loss_main + lambda_cov_add * coverage_loss_add
+            # if self.training:
+            #     lambda_cov_main = 0.5   # 建议从 0.1~0.3 试
+            #     lambda_cov_add  = 0.2   # addition 分支给小一点或先关掉
+            #     commitment_loss = commitment_loss + lambda_cov_main * coverage_loss_main + lambda_cov_add * coverage_loss_add
 
             # indices = soft_counts
             # entropies = (marginal_entropy, cond_entropy)

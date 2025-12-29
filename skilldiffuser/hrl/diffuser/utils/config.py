@@ -3,6 +3,8 @@ import collections.abc as abc
 import importlib
 import pickle
 from ml_logger import logger as ml_logger
+import torch
+import torch.distributed as dist
 
 def import_class(_class):
     if type(_class) is not str: return _class
@@ -32,7 +34,11 @@ class Config(abc.Mapping):
         if verbose:
             print(self)
 
-        if savepath is not None:
+        is_rank0 = True
+        if dist.is_available()and dist.is_initialized():
+            is_rank0 = dist.get_rank() == 0
+
+        if savepath is not None and is_rank0:
             path_parts = savepath.strip('/').split('/')
             relative_savepath = '../../' + '/'.join(path_parts[2:])
             ml_logger.save_pkl(self, relative_savepath)

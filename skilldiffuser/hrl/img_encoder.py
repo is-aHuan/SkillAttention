@@ -41,7 +41,8 @@ class Encoder(BaseEncoder):
         self.sigmoid = nn.Sigmoid()
         self.robot = robot
         if self.robot:
-            g = 4
+            # g = 4
+            g = ch // 3
         else:
             g = 1
         self.conv1 = nn.Conv2d(ch, 32, 4, stride=2, padding=1, groups=g)  # 3

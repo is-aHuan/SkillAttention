@@ -467,41 +467,61 @@ class GaussianInvDynDiffusion(nn.Module):
         shape = (batch_size, horizon, self.observation_dim)
 
         return self.p_sample_loop(shape, cond, returns, *args, **kwargs)
+    
     #------------------------------------------ training ------------------------------------------#
 
-    def q_sample(self, x_start, t, noise=None):
-        if noise is None:
-            noise = torch.randn_like(x_start)
-
+    # self.sqrt_alphas_cumprod: shape (n_timesteps)
+    # self.sqrt_one_minus_alphas_cumprod: shape (n_timesteps)
+    # extract: function to extract appropriate timestep sqrt_alphas and sqrt_one_minus_alphas for a batch
+    def q_sample(self, x_start, t, noise):
         sample = (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
-
         return sample
 
-    def p_losses(self, x_start, cond, t, returns=None):
+    def p_losses(self, x_start, t, returns, condition_mask, valid_mask=None):
         noise = torch.randn_like(x_start)
-
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        x_noisy = apply_conditioning(x_noisy, cond, 0)
+        x_noisy = torch.where(condition_mask, x_start, x_noisy)
 
-        x_recon = self.model(x_noisy, cond, t, returns)
+        x_recon = self.model(x_noisy, t, returns)
 
         if not self.predict_epsilon:
-            x_recon = apply_conditioning(x_recon, cond, 0)
+            x_recon = torch.where(condition_mask, x_start, x_recon)
 
-        assert noise.shape == x_recon.shape
+        assert noise.shape == x_recon.shape == x_start.shape
 
         if self.predict_epsilon:
-            loss, info = self.loss_fn(x_recon, noise)
+            target = noise
         else:
-            loss, info = self.loss_fn(x_recon, x_start)
+            target = x_start
 
-        # info.update({'x_recon': x_recon})
+        if valid_mask is None:
+            valid_mask = torch.ones_like(x_start, dtype=torch.bool)
+        loss_mask = valid_mask & (~condition_mask)   # [B, K, obs_dim]
+
+        sq_error = (x_recon - target) ** 2
+        sq_error = sq_error * loss_mask
+
+        denom = loss_mask.sum()
+        if denom.item() == 0:
+            loss = sq_error.mean()
+        else:
+            loss = sq_error.sum() / denom
+
+        info = {'diff_loss': loss.detach()}
         return loss, info
+    
+        # if self.predict_epsilon:
+        #     loss, info = self.loss_fn(x_recon, noise)
+        # else:
+        #     loss, info = self.loss_fn(x_recon, x_start)
 
-    def loss(self, x, cond, returns=None):
+        # # info.update({'obs': x_recon})
+        # return loss, info
+
+    def loss(self, x, returns=None, valid_mask=None, condition_mask=None):
         if self.train_only_inv:
             # Calculating inv loss
             x_t = x[:, :-1, self.action_dim:]
@@ -517,17 +537,19 @@ class GaussianInvDynDiffusion(nn.Module):
                 pred_a_t = self.inv_model(x_comb_t)
                 loss = F.mse_loss(pred_a_t, a_t)
                 info = {'a0_loss': loss}
+
         else:
             batch_size = len(x)
             t = torch.randint(0, self.n_timesteps, (batch_size,), device=x.device).long()
-            diffuse_loss, info = self.p_losses(x[:, :, self.action_dim:], cond, t, returns)
+            diffuse_loss, info = self.p_losses(x[:, :, self.action_dim:], t, returns, condition_mask, valid_mask)
+
             # Calculating inv loss
             x_t = x[:, :-1, self.action_dim:]
-            info.update({'obs': x})  # TODO
-            a_t = x[:, :-1, :self.action_dim]
             x_t_1 = x[:, 1:, self.action_dim:]
             x_comb_t = torch.cat([x_t, x_t_1], dim=-1)
             x_comb_t = x_comb_t.reshape(-1, 2 * self.observation_dim)
+
+            a_t = x[:, :-1, :self.action_dim]
             a_t = a_t.reshape(-1, self.action_dim)
             if self.ar_inv:
                 inv_loss = self.inv_model.calc_loss(x_comb_t, a_t)
@@ -535,6 +557,7 @@ class GaussianInvDynDiffusion(nn.Module):
                 pred_a_t = self.inv_model(x_comb_t)
                 inv_loss = F.mse_loss(pred_a_t, a_t)
 
+            info.update({'action_pred': pred_a_t})
             loss = (1 / 2) * (diffuse_loss + inv_loss)
 
         return loss, info

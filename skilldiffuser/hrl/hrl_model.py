@@ -1,5 +1,4 @@
-import pdb
-
+import wandb
 import torch
 import torch.nn as nn
 from transformers import DistilBertModel
@@ -70,145 +69,106 @@ class HRLModel(nn.Module, IQMixin):
 
     def forward(self, lm_input_ids, lm_attention_mask, 
                 states, actions, timesteps, iter_num, ind, diff_train_num, attention_mask=None):
-        # pdb.set_trace()
         batch_size, traj_len = states.shape[0], states.shape[1]
         if not self.train_lm:
             with torch.no_grad():
-                # (batch_size,num_embeddings,embedding_size)
                 lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
-                # sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
         else:
-            # (batch_size,num_embeddings,embedding_size)
             lm_embeddings = self.lm(lm_input_ids, lm_attention_mask).last_hidden_state
-            # sub_lm_embeddings = self.lm(sub_lm_input_ids, sub_lm_attention_mask).last_hidden_state
         cls_embeddings = lm_embeddings[:, 0, :].unsqueeze_(1)
-        # word_embeddings = lm_embeddings[:, 1:-1, :]      # We skip the CLS and SEP tokens. I know there's padding here but we at least always remove the CLS
         word_embeddings = lm_embeddings[:, 1:, :]      # We skip the CLS tokens 
 
-        # sub_cls_embeddings = sub_lm_embeddings[:, 0, :].unsqueeze_(1)
-        # sub_word_embeddings = sub_lm_embeddings[:, 1:, :]  # We skip the CLS tokens
-
-        # # TODO: lm_embeddings + sub_lm_embeddings ??
-        # if False:
-        #     word_embeddings = self.layer_norm(word_embeddings.broadcast_to(sub_word_embeddings.shape) + sub_word_embeddings)
-        #     cls_embeddings = self.layer_norm(cls_embeddings.broadcast_to(sub_cls_embeddings.shape) + sub_cls_embeddings)
-        # else:
-        #     world_embeddings = sub_word_embeddings
-        #     cls_embeddings = sub_cls_embeddings
-
         entropy = None
-        if self.method == 'vanilla':
-            raise NotImplementedError
-            # preds = self.decision_transformer(
-            #     states, actions, timesteps, word_embeddings=word_embeddings, attention_mask=attention_mask)
-            #
-            # state_rc_preds = None
-            # state_rc_targets = None
-            #
-            # lang_rc_preds = None
-            # lang_rc_targets = None
-            #
-            # commitment_loss = None
+        # TODO (important) how does this get padded across batches? some of these horizon states may actually be padding
+        # we change options only every H states. Say this leads to N states
+        # N selected options
+        # B, max_length // H, option_dim
+        if self.method == 'option':
+            # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
+            selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+                word_embeddings.mean(1, keepdim=True), states)
         else:
-            # TODO (important) how does this get padded across batches? some of these horizon states may actually be padding
-            # we change options only every H states. Say this leads to N states
-            # N selected options
-            # B, max_length // H, option_dim
-            if self.method == 'option':
-                # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
-                selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-                    word_embeddings.mean(1, keepdim=True), states)
-            else:
-                selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-                    word_embeddings, states, timesteps, attention_mask)
-                
-            # if self.method == 'option':
-            #     # selected_options, _, commitment_loss = self.option_selector(cls_embeddings, states)
-            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-            #         sub_word_embeddings.mean(1, keepdim=True), states)
-            # else:
-            #     selected_options, _, commitment_loss, entropy, state_embeddings = self.option_selector(
-            #         sub_word_embeddings, states, timesteps, attention_mask)
+            selected_options, _, _, commitment_loss, entropy, state_embeddings = self.option_selector(
+                word_embeddings, states, timesteps, attention_mask)
 
-            # # need to make options same length as states and actions
-            options = torch.zeros((batch_size, traj_len, selected_options.shape[-1])).to(selected_options.device)
+        # # need to make options same length as states and actions
+        options = torch.zeros((batch_size, traj_len, selected_options.shape[-1])).to(selected_options.device)
 
-            ### This doesn't really work in making only some messages have gradients and others not having gradients
-            ### The entire options tensor below has gradients after we do options = selected_options
-            ### Actually it may only have the gradients related to the selectbackward operation -- unsure
+        ### This doesn't really work in making only some messages have gradients and others not having gradients
+        ### The entire options tensor below has gradients after we do options = selected_options
+        ### Actually it may only have the gradients related to the selectbackward operation -- unsure
 
-            # Repeated detached options for horizon length
-            for i in range(selected_options.shape[1]):
-                options[:, i*self.horizon:(i+1)*self.horizon, :] = selected_options[:,
-                                                                                    i, :].unsqueeze(1).clone().detach()
-            # Make sure to pass gradients for options at each horizon steps
-            options[:, ::self.horizon, :] = selected_options
+        # Repeated detached options for horizon length
+        for i in range(selected_options.shape[1]):
+            options[:, i*self.horizon:(i+1)*self.horizon, :] = selected_options[:,
+                                                                                i, :].unsqueeze(1).clone().detach()
+        # Make sure to pass gradients for options at each horizon steps
+        options[:, ::self.horizon, :] = selected_options
 
-            # We reshape sequences to K size sub-sequences, so that the sub-policy only uses the current option
-            # Here we are choosing K to be horizon
-            B, L = states.shape[0], states.shape[1]
-            num_seq = L // self.K  # self.K == self.horizon == 8
+        # We reshape sequences to K size sub-sequences, so that the sub-policy only uses the current option
+        # Here we are choosing K to be horizon
+        B, L = states.shape[0], states.shape[1]
+        num_seq = L // self.K  # self.K == self.horizon == 8
 
-            # We reshape sequences to K size sub-sequences, so that the sub-policy only uses the current option
-            # Here we are choosing K to be horizon since it makes sense but technically we can do any K
-            # This ensures the DT only looks at chunks of size horizon
-            if isinstance(self.state_dim, tuple):
-                states = states.reshape(B * num_seq, self.K, *self.state_dim)
-            else:
-                states = states.reshape(B * num_seq, self.K, self.state_dim)
-            state_embeddings = state_embeddings.reshape(B * num_seq, self.K, state_embeddings.shape[2])
-            options = options.reshape(B * num_seq, self.K, self.option_dim)
-            actions = actions.reshape(B * num_seq, self.K, self.action_dim)
-            # Should these timesteps be 1,2,3,4..H,1,2... or just 1,2,3,4...L? Going with 1,2,3,4...L
-            timesteps = timesteps.reshape(B * num_seq, self.K)
-            # timesteps = torch.arange(0, self.K).repeat(B * num_seq, 1)
-            attention_mask = attention_mask.reshape(B * num_seq, self.K)
+        # We reshape sequences to K size sub-sequences, so that the sub-policy only uses the current option
+        # Here we are choosing K to be horizon since it makes sense but technically we can do any K
+        # This ensures the DT only looks at chunks of size horizon
+        if isinstance(self.state_dim, tuple):
+            states = states.reshape(B * num_seq, self.K, *self.state_dim)
+        else:
+            states = states.reshape(B * num_seq, self.K, self.state_dim)
 
-            # Make sure shapes are okay
-            assert states.shape[0] == actions.shape[0] == options.shape[0] == timesteps.shape[0] == attention_mask.shape[0] == batch_size * num_seq
-            assert states.shape[1] == actions.shape[1] == options.shape[1] == timesteps.shape[1] == attention_mask.shape[1] == self.K
-            # preds = self.decision_transformer(
-            #     states, actions, timesteps, options=options, attention_mask=attention_mask)
+        state_embeddings = state_embeddings.reshape(B * num_seq, self.K, state_embeddings.shape[2])
+        options = options.reshape(B * num_seq, self.K, self.option_dim)
+        actions = actions.reshape(B * num_seq, self.K, self.action_dim)
+        
+        # Should these timesteps be 1,2,3,4..H,1,2... or just 1,2,3,4...L? Going with 1,2,3,4...L
+        timesteps = timesteps.reshape(B * num_seq, self.K)
+        # timesteps = torch.arange(0, self.K).repeat(B * num_seq, 1)
+        attention_mask = attention_mask.reshape(B * num_seq, self.K)
 
-            # TODO
-            encoder_out = self.diffuser.encode(states, actions, timesteps, options=options,
-                                               state_embeddings=state_embeddings, attention_mask=attention_mask)
+        # Make sure shapes are okay
+        assert states.shape[0] == actions.shape[0] == options.shape[0] == timesteps.shape[0] == attention_mask.shape[0] == batch_size * num_seq
+        assert states.shape[1] == actions.shape[1] == options.shape[1] == timesteps.shape[1] == attention_mask.shape[1] == self.K
+        # preds = self.decision_transformer(
+        #     states, actions, timesteps, options=options, attention_mask=attention_mask)
 
-            stacked_inputs = encoder_out['stacked_inputs'].to(self.device)
-            option_embeddings = encoder_out['option_embeddings'].to(self.device)
-            conds = {}
-            returns = option_embeddings  # conditions
-            # num_diff_steps = int(self.args.diffuser.n_train_steps // self.args.max_iters)
-            for in_step in range(diff_train_num):
-                # step = iter_num * num_diff_steps + ind * diff_train_num + in_step
-                self.diff_trainer.train_iteration((stacked_inputs, conds, returns))
+        # TODO
+        encoder_out = self.diffuser.encode(actions, options=options, state_embeddings=state_embeddings)
 
-            diff_loss, infos = self.diff_trainer.model.loss(stacked_inputs, conds, returns)
-            obs_recon = infos.pop('obs')
+        stacked_inputs = encoder_out['stacked_inputs'].to(self.device)
+        option_embeddings = encoder_out['option_embeddings'].to(self.device)
 
-            decode_outputs = self.diffuser.decode(obs_recon)
+        valid_mask = attention_mask.bool()  # [B*num_seq, K]
+        # B_seq, K = valid_mask.shape
+        obs_dim = state_embeddings.size(-1)
 
-            self.state_reconstruct = False
-            self.lang_reconstruct = False
-            if self.state_reconstruct:
-                # TODO: Maybe fix?? We now predict an option using trajs
-                state_rc_preds = self.state_reconstructor(selected_options)
-                state_rc_targets = states  # horizon_states
-            else:
-                state_rc_preds = None
-                state_rc_targets = None
+        # example: [0,0,1,1,1] -> cumsum = [0,0,1,2,3]，==1 的位置就是第一个有效
+        cumsum = valid_mask.int().cumsum(dim=1)          # [B*num_seq, K]
+        first_valid_step_mask = (cumsum == 1)            # [B*num_seq, K], True 表示该样本的第一个有效时间步
 
-            if self.lang_reconstruct:
-                # TODO: Maybe fix?? Do we need the max options formulation? Check this
-                lang_rc_preds = self.lang_reconstructor(selected_options.reshape(batch_size, -1))
-                lang_rc_targets = cls_embeddings
-            else:
-                lang_rc_preds = None
-                lang_rc_targets = None
+        # 展开到 obs_dim 维度，用于在 [B,K,obs_dim] 上做 where / loss mask
+        condition_mask = first_valid_step_mask.unsqueeze(-1).expand(-1, -1, obs_dim)   # [B*num_seq, K, obs_dim]
+        valid_mask = valid_mask.unsqueeze(-1).expand(-1, -1, obs_dim)         # [B*num_seq, K, obs_dim]
+
+        returns = option_embeddings  # conditions for diffusion model
+        self.diff_log_interval = 100
+        diff_loss_list = []
+        for in_step in range(diff_train_num):
+            step = iter_num * diff_train_num + ind * diff_train_num + in_step
+            diff_loss = self.diff_trainer.train_iteration((stacked_inputs, returns, valid_mask, condition_mask))
+            diff_loss_list.append(diff_loss.detach().cpu().item())
+
+            if step % self.diff_log_interval == 0:
+                avg_diff_loss = sum(diff_loss_list) / len(diff_loss_list)
+                diff_loss_list = []
+                wandb.log({'inner/diff_loss': avg_diff_loss}, step=step)
+
+        diff_loss, infos = self.diff_trainer.model.loss(stacked_inputs, returns, valid_mask, condition_mask)
+        action_pred = infos.pop('action_pred')
+        decode_outputs = self.diffuser.decode(action_pred)
 
         return {'dt': decode_outputs,
-                'state_rc': (state_rc_preds, state_rc_targets),
-                'lang_rc': (lang_rc_preds, lang_rc_targets),
                 'actions': actions,
                 'attention_mask': attention_mask,
                 'commitment_loss': commitment_loss,
@@ -232,10 +192,12 @@ class HRLModel(nn.Module, IQMixin):
             conds = {0: stacked_inputs[:, -1, self.diffuser.act_dim:]}
             returns = option_embeddings  # conditions
             action = ema_diffusion_model.conditional_sample(conds, returns=returns)
-            action = action[:, :-1, :self.action_dim]
+
+            # ours
+            action = action[:, :, :self.action_dim]
+            # action = samples.reshape(-1, samples.shape[-1])
 
             # samples = ema_diffusion_model.conditional_sample(conds, returns=returns)
-            # action = samples.reshape(-1, samples.shape[-1])
 
             # action_hist = []
             # for tt in range(samples.shape[1]-1):
@@ -258,9 +220,15 @@ class HRLModel(nn.Module, IQMixin):
             if self.diffuser.discrete:
                 action = action.argmax(dim=1)
 
+        # ours
         # action = action.squeeze(0)
         # action = torch.cat(action_hist, dim=0)
         return action.squeeze(dim=0)
+    
+        # # action = action.squeeze(0)
+        # action = torch.cat(action_hist, dim=0)
+        # return action
+
 
     def save(self, iter_num, filepath, config):
         if hasattr(self.model, 'module'):

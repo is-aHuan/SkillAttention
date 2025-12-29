@@ -148,7 +148,9 @@ class OptionTransformer(nn.Module):
             if state_dim[0] == 3:
                 # LORL Sawyer
                 self.embed_state = Encoder(hidden_size=hidden_size, ch=3, robot=False)
-                # self.embed_state = ClipVisionTower(vision_tower="openai/clip-vit-large-patch14")
+            elif state_dim[0] == 6:
+                # RealMan RML63B
+                self.embed_state = Encoder(hidden_size=hidden_size, ch=6, robot=True)
             else:
                 # LORL Franka
                 self.embed_state = Encoder(hidden_size=hidden_size, ch=12, robot=True)

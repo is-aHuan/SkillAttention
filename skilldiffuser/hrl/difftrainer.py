@@ -68,30 +68,16 @@ class DiffTrainer(nn.Module):
     # -----------------------------------------------------------------------------#
 
     def train_iteration(self, batch):
-        # timer = Timer()
-        # for step in range(n_train_steps):
-        # for i in range(self.gradient_accumulate_every):
-            # batch = next(self.dataloader)
-            # batch = batch_to_device(batch, device=self.device)
         loss, infos = self.model.loss(*batch)
-        # loss = loss / self.gradient_accumulate_every
-
-        # self.optimizer.zero_grad()
-        # loss.backward(retain_graph=True)
-        # self.optimizer.step()
-
         self.optimizer.zero_grad()
         loss.backward(retain_graph=True)
 
+        # DDP gradient averaging for diffusion module
         if dist.is_available() and dist.is_initialized():
             world_size = dist.get_world_size()
-            # 遍历模型的所有参数
             for param in self.model.parameters():
-                # 确保参数有梯度
                 if param.grad is not None:
-                    # 1. 对梯度执行 AllReduce (SUM) 操作，结果会保存在每个进程的 param.grad.data 中
                     dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                    # 2. 除以 world_size 得到平均梯度
                     param.grad.data /= world_size
 
         self.optimizer.step()
@@ -102,9 +88,8 @@ class DiffTrainer(nn.Module):
         if self.step % self.save_freq == 0:
             if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
                 self.save()
-
+                
         infos.pop('obs')
-
         if self.step % self.log_freq == 0:
             infos_str = ' | '.join([f'{key}: {val:8.4f}' for key, val in infos.items()])
 
@@ -130,7 +115,7 @@ class DiffTrainer(nn.Module):
         #         self.render_samples()
 
         self.step += 1
-        return
+        return loss
 
     def save(self):
         '''

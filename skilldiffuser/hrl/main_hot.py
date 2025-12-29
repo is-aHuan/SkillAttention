@@ -24,6 +24,7 @@ import time
 import ast
 import hydra
 import random
+import shutil
 
 from omegaconf import DictConfig, OmegaConf
 from transformers import DistilBertTokenizer
@@ -33,14 +34,44 @@ from hrl_model import HRLModel
 from trainer import Trainer
 from difftrainer import DiffTrainer
 import diffuser.utils as diffutils
-from omegaconf import open_dict
-from inferencer.robobrain_planner import RoboBrainPlanner
+# from omegaconf import open_dict
+# from inferencer.robobrain_planner import RoboBrainPlanner
+
+# def create_global_logger(log_file=None, log_level=logging.INFO):
+#     """创建全局 logger，只有 rank 0 输出"""
+#     is_ddp = dist.is_available() and dist.is_initialized()
+#     global_rank = dist.get_rank() if is_ddp else 0
+#     logger = logging.getLogger('main')  # 使用固定名称
+    
+#     if logger.handlers:
+#         logger.handlers.clear()
+        
+#     logger.setLevel(log_level if global_rank == 0 else logging.ERROR)
+#     formatter = logging.Formatter('%(asctime)s  %(levelname)5s  %(message)s')
+
+#     console = logging.StreamHandler()
+#     console.setLevel(log_level if global_rank == 0 else logging.ERROR)
+#     console.setFormatter(formatter)
+#     logger.addHandler(console)
+
+#     if log_file is not None:
+#         file_handler = logging.FileHandler(filename=log_file)
+#         file_handler.setLevel(log_level if global_rank == 0 else logging.ERROR)
+#         file_handler.setFormatter(formatter)
+#         logger.addHandler(file_handler)
+
+#     logger.propagate = False
+#     return logger
 
 def create_global_logger(log_file=None, log_level=logging.INFO):
     """创建全局 logger，只有 rank 0 输出"""
     is_ddp = dist.is_available() and dist.is_initialized()
     global_rank = dist.get_rank() if is_ddp else 0
-    logger = logging.getLogger('main')  # 使用固定名称
+
+    if is_ddp and global_rank != 0:
+        os.environ.setdefault("WANDB_INIT_DISABLED", "true")
+
+    logger = logging.getLogger('main')  # use fixed name
     
     if logger.handlers:
         logger.handlers.clear()
@@ -65,6 +96,21 @@ def create_global_logger(log_file=None, log_level=logging.INFO):
 def init_logger():
     global logger
     logger = create_global_logger()
+
+def _disable_file_logging_for_non_rank0():
+    is_ddp = dist.is_available() and dist.is_initialized()
+    if not is_ddp or dist.get_rank() == 0:
+        return
+    # 移除所有 FileHandler，避免写 main_hot.log
+    for name in ["", "root", "hydra", "main"]:
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            if isinstance(h, logging.FileHandler):
+                try:
+                    lg.removeHandler(h)
+                    h.close()
+                except Exception:
+                    pass
 
 def build_train_dataset_and_loader(args, device, batch_size):
     """
@@ -130,7 +176,7 @@ def build_train_dataset_and_loader(args, device, batch_size):
         num_workers=num_workers,
         shuffle=shuffle,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
         sampler=train_sampler
     )
     return train_dataset, train_loader, train_sampler
@@ -163,7 +209,6 @@ def evaluate(cfg):
     print(OmegaConf.to_yaml(args))
 
     args.method = args.model.name
-
     exp_name = f'Tune-eval-{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
 
@@ -174,7 +219,6 @@ def evaluate(cfg):
             project=f'debug_eval_hrl_{args.env.name}',
             config=dict(args),
             settings=wandb.Settings(init_timeout=480)
-            # entity='language-rl'
         )
 
     tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
@@ -498,9 +542,11 @@ def evaluate(cfg):
 def train(args):
     device = args.trainer.device
     args.method = args.model.name
+    # if 'realman' in args.train_dataset.expert_location:
+    #     exp_name = f'RealMan-{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
+    # else:
     exp_name = f'{args.project_name}-{args.train_dataset.num_trajectories}-{args.method}'
     args.savepath = f'{args.hydra_base_dir}/{args.savedir}/{exp_name}-{datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
-
 
     is_ddp = dist.is_available() and dist.is_initialized()
     global_rank = dist.get_rank() if is_ddp else 0
@@ -513,17 +559,23 @@ def train(args):
 
     wandb_logger = logging.getLogger("wandb")
     wandb_logger.setLevel(logging.INFO)
-    if args.wandb:
-        # os.environ["WANDB_MODE"] = "offline"
+    # if args.wandb:
+    #     wandb.init(
+    #         name=exp_name,
+    #         group=args.method,
+    #         project=f'Tune-train-{args.env.name}',  # diff_hot_pluo_diff_loss_{args.env.name} # TODO frozen  diff_hot_A100_LN
+    #         config=dict(args),
+    #     )
+
+    if args.wandb and global_rank == 0:
         wandb.init(
             name=exp_name,
             group=args.method,
-            project=f'Tune-train-{args.env.name}',  # diff_hot_pluo_diff_loss_{args.env.name} # TODO frozen  diff_hot_A100_LN
+            project=f'RealMan-train-{args.env.name}',
             config=dict(args),
-            # entity='language-rl'
         )
-
-    if not os.path.isdir(args.savepath):
+        
+    if not os.path.isdir(args.savepath) and global_rank == 0:
         os.makedirs(args.savepath, exist_ok=True)
 
     tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
@@ -626,10 +678,18 @@ def train(args):
     # diffuser_save_path = os.path.join("outputs", os.path.split(tmp_path[0])[1], tmp_path[1])
 
     diffuser_save_path = args.hydra_base_dir
+    if global_rank == 0:
+        model_savepath = os.path.join(diffuser_save_path, 'model_config.pkl')
+        diffusion_savepath = os.path.join(diffuser_save_path, 'diffusion_config.pkl')
+        trainer_savepath = os.path.join(diffuser_save_path, 'trainer_config.pkl')
+    else:
+        model_savepath = None
+        diffusion_savepath = None
+        trainer_savepath = None
     if args.diffuser.diffusion == 'models.GaussianInvDynDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
-            savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
+            savepath=model_savepath,
             horizon=args.diffuser.horizon,
             # transition_dim=observation_dim,
             # cond_dim=observation_dim,
@@ -645,7 +705,7 @@ def train(args):
 
         diffusion_config = diffutils.Config(
             args.diffuser.diffusion,
-            savepath=os.path.join(diffuser_save_path, 'diffusion_config.pkl'),
+            savepath=diffusion_savepath,
             horizon=args.diffuser.horizon,
             # observation_dim=observation_dim,
             # action_dim=action_dim,
@@ -670,7 +730,7 @@ def train(args):
     elif args.diffuser.diffusion == 'models.ActionDiffusion':
         model_config = diffutils.Config(
             args.diffuser.model,
-            savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
+            savepath=model_savepath,
             horizon=args.diffuser.horizon,
             # transition_dim=observation_dim + action_dim,
             # cond_dim=observation_dim,
@@ -686,7 +746,7 @@ def train(args):
 
         diffusion_config = diffutils.Config(
             args.diffuser.diffusion,
-            savepath=os.path.join(diffuser_save_path, 'diffusion_config.pkl'),
+            savepath=diffusion_savepath,
             horizon=args.diffuser.horizon,
             hidden_size=args.dt.hidden_size,  # TODO
             # observation_dim=observation_dim,
@@ -709,7 +769,7 @@ def train(args):
     else:
         model_config = diffutils.Config(
             args.diffuser.model,
-            savepath=os.path.join(diffuser_save_path, 'model_config.pkl'),
+            savepath=model_savepath,
             horizon=args.diffuser.horizon,
             # transition_dim=observation_dim + action_dim,
             # cond_dim=observation_dim,
@@ -725,7 +785,7 @@ def train(args):
 
         diffusion_config = diffutils.Config(
             args.diffuser.diffusion,
-            savepath=os.path.join(diffuser_save_path, 'diffusion_config.pkl'),
+            savepath=diffusion_savepath,
             horizon=args.diffuser.horizon,
             # observation_dim=observation_dim,
             # action_dim=action_dim,
@@ -745,7 +805,7 @@ def train(args):
         )
 
     diff_trainer_args = dict(
-        savepath=os.path.join(diffuser_save_path, 'trainer_config.pkl'),
+        savepath=trainer_savepath,
         train_batch_size=args.diffuser.batch_size,  # TODO
         train_lr=args.diffuser.learning_rate,
         gradient_accumulate_every=args.diffuser.gradient_accumulate_every,
@@ -789,7 +849,7 @@ def train(args):
     if args.resume:
         args.warmup_steps = 0
         #checkpoint = trainer.load(args.checkpoint_path)
-        checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=False)
         model = model.to(device)
         # checkpoint['model']['diffuser.embed_ln.weight'] = checkpoint['model']['diffuser.embed_ln.weight']
         # checkpoint['model']['diffuser.embed_ln.bias'] = checkpoint['model']['diffuser.embed_ln.bias']
@@ -891,13 +951,14 @@ def train(args):
         outputs = trainer.train_iteration(
             iter_num=iter_num, print_logs=True, eval_render=args.render)
 
-        if args.wandb and iter_num % args.log_interval == 0:
+        # if args.wandb and iter_num % args.log_interval == 0:
+        #     wandb.log(outputs, step=iter_num)
+        if args.wandb and global_rank == 0 and iter_num % args.log_interval == 0:
             wandb.log(outputs, step=iter_num)
 
         if iter_num % args.save_interval == 0:
             if local_rank == 0:
                 trainer.save(iter_num, f'{args.savepath}/model_{iter_num}.ckpt', args)
-
         # break
 
 def get_args(cfg: DictConfig):
@@ -939,6 +1000,14 @@ def main(cfg: DictConfig):
         torch.distributed.init_process_group(backend='nccl')
     
     # init_logger()
+    # 禁用非 rank0 的文件日志，避免多个 main_hot.log
+    _disable_file_logging_for_non_rank0()
+    # 非 rank0 删除自己目录中的 .hydra（统一 run.dir 时，只有一个目录；此步骤对分目录场景同样安全）
+    is_ddp = dist.is_available() and dist.is_initialized()
+    if is_ddp and dist.get_rank() != 0:
+        hydra_dir = os.path.join(cfg.hydra_base_dir, ".hydra")
+        if os.path.isdir(hydra_dir):
+            shutil.rmtree(hydra_dir, ignore_errors=True)
 
     device = torch.device(args.trainer.device)
     if device.type == 'cuda' and torch.cuda.is_available() and args.cuda_deterministic:

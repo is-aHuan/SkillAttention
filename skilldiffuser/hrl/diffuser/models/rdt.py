@@ -166,6 +166,7 @@ class ActionDiffusion(nn.Module):
 
         if return_diffusion: diffusion = [noisy_action]
 
+        self.n_timesteps = 1
         progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
@@ -221,7 +222,9 @@ class ActionDiffusion(nn.Module):
             loss, info = self.loss_fn(x_recon, noise)
         else:
             loss, info = self.loss_fn(x_recon, x_start)
-        
+
+
+        info.update({'obs': x_recon})
         return loss, info
 
     def loss(self, x, cond, returns=None):
@@ -231,7 +234,7 @@ class ActionDiffusion(nn.Module):
         a_t = x[:, :, :self.action_dim]
         t = torch.randint(0, self.n_timesteps, (batch_size,), device=x.device).long()
         loss, info = self.p_losses(a_t, cond, t, returns)
-        info.update({'obs': x}) 
+        # info.update({'obs': x}) 
         return loss, info
 
     def forward(self, cond, *args, **kwargs):
@@ -397,6 +400,7 @@ class Diffusion(nn.Module):
 
         if return_diffusion: diffusion = [noisy_state]
 
+        self.n_timesteps = 1
         progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
@@ -517,13 +521,14 @@ class Diffusion(nn.Module):
         else:
             loss, info = self.loss_fn(x_recon, x_start)
 
+        info.update({'obs': x_recon})
         return loss, info
 
     def loss(self, x, cond, returns=None):
         batch_size = len(x)
         t = torch.randint(0, self.n_timesteps, (batch_size,), device=x.device).long()
         loss, info = self.p_losses(x, cond, t, returns)
-        info.update({'obs': x}) 
+        # info.update({'obs': x}) 
         return loss, info
 
     def forward(self, cond, *args, **kwargs):

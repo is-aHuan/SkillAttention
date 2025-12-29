@@ -19,8 +19,9 @@ diffuser:
 #  savepath: '/home/zxliang/new-code/LISA/lisa/outputs/diffuser_debug'
 
   model: 'models.TemporalUnet'
-  # diffusion: 'models.GaussianInvDynDiffusion'
-  diffusion: 'models.Diffusion'
+  diffusion: 'models.GaussianInvDynDiffusion'
+  # diffusion: 'models.Diffusion'
+  # diffusion: 'models.ActionDiffusion'
   horizon: ${model.horizon}  # 100
   dim_mults: '(1, 4, 8)'
   n_diffusion_steps: 200   # 512
@@ -65,7 +66,7 @@ diffuser:
   gradient_accumulate_every: 1  # 2
   ema_decay: 0.995
   log_freq: 1000
-  save_freq: 50000
+  save_freq: 20000
   sample_freq: 10000
   n_saves: 5
   save_parallel: False

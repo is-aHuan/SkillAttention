@@ -114,6 +114,8 @@ class WeightedLoss(nn.Module):
         loss = self._loss(pred, targ)
         weighted_loss = (loss * self.weights).mean()
         a0_loss = (loss[:, 0, :self.action_dim] / self.weights[0, :self.action_dim]).mean()
+
+        # a0_loss represents the unweighted loss on the start action in horizon only
         return weighted_loss, {'a0_loss': a0_loss}
 
 class WeightedStateLoss(nn.Module):

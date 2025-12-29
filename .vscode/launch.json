@@ -39,9 +39,10 @@
                 "trainer.eval_every=1",
                 // "model.horizon=4",
                 // "model.K=4",
-                "train_dataset.num_trajectories=3",
-                "savepath=/home/lyh/Data/lorel/may_08_sawyer_50k",
-                "train_dataset.expert_location=/home/lyh/Data/lorel/may_08_sawyer_50k/prep_data_first_200.pkl"
+                "train_dataset.num_trajectories=10",
+                "savepath=/media/lyh/HDD/Data/lorel/may_08_sawyer_50k",
+                "train_dataset.expert_location=/media/lyh/HDD/Data/lorel/may_08_sawyer_50k/prep_data_first_200.pkl",
+                "hydra_base_dir=/media/lyh/HDD/checkpoints/skdif_tune_outputs"
             ]
         },
     ]
