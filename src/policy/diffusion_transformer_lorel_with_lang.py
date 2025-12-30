@@ -1,0 +1,363 @@
+import os
+import copy
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+from transformers import DistilBertModel, DistilBertTokenizer
+import numpy as np
+
+from diffuser.utils.training import EMA
+from diffuser.models.transformer_diffusion_lang import TransformerForDiffusionWithLanguage
+from diffuser.models.diffusion_policy_scheduler import SkillConditionDiffusion
+from options.option_selector import OptionSelector
+from src.policy.img_encoder import SingleImageObsEncoder
+
+class SkillAttentionTransformerLorelLangModel(nn.Module):
+    def __init__(self, 
+                 policy_args, 
+                 diff_args,
+                 device, 
+                 **kwargs):
+        super().__init__()
+
+        self.device = device
+        self.pred_action_steps_only = policy_args.get('pred_action_steps_only', False)
+        
+        # --- Policy Params ---
+        self.action_dim = policy_args['action_dim']
+        self.option_dim = policy_args['option_dim']
+        self.proprio_dim = policy_args['proprio_dim']
+
+        self.horizon = policy_args['horizon']
+        self.n_action_steps = policy_args['n_action_steps']
+        self.n_obs_steps = policy_args['n_obs_steps']
+        self.obs_as_global_cond = policy_args['obs_as_global_cond']
+        self.option_as_global_cond = policy_args['option_as_global_cond']
+
+        self.max_lang_length = policy_args['max_lang_length']
+
+        # --- Language Model ---
+        self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+        self.lm = DistilBertModel.from_pretrained('distilbert-base-uncased')
+        self.lm.eval()
+
+        # --- 1) SingleImageObsEncoder ---
+        obs_cfg = dict(policy_args.obs_encoder)
+        self.obs_encoder = SingleImageObsEncoder(**obs_cfg)
+
+        # 2) 计算 obs_feat_dim
+        self.obs_feat_dim = self.obs_encoder.feat_dim
+        
+        # --- Option Selector ---
+        opt_cfg = dict(policy_args.option_selector)
+        opt_cfg['state_dim'] = self.obs_encoder.image_feat_dim
+        self.option_selector = OptionSelector(**opt_cfg)
+
+        # --- 3) 构建 Diffusion Model (集成在内部) ---
+        self.diffusion_model = self._build_diffusion_model(diff_args)
+
+        # --- 4) 配置 EMA (集成在内部) ---
+        self.ema_decay = diff_args.ema_decay
+        self.update_ema_every = diff_args.update_ema_every
+        self.step_start_ema = 5
+        self.step = 0
+
+        self.ema = EMA(self.ema_decay)
+        # 深拷贝构建 EMA 模型
+        self.ema_model = copy.deepcopy(self.diffusion_model)
+        # ✅ 关键：EMA 模型不需要梯度，防止 DDP 把它当做需要训练的参数
+        self.ema_model.requires_grad_(False)
+
+        # --- Stats ---
+        memmap_dir = kwargs.get('memmap_dir', None)
+        assert memmap_dir is not None, "Please provide memmap_dir for ExpertDatasetRealMan!"
+        self.memmap_dir = memmap_dir
+        self._load_stats(memmap_dir)
+
+    # ----------------------- TRAIN FORWARD ----------------------- #
+    def forward(self,
+                langs,            # list[str]
+                obs,              # dict
+                actions,          # [B, K, Da]
+                timesteps,        # [B, K]
+                attention_mask,   # [B, K]
+                ):
+        device = self.device
+
+        # ---------------- 0. 数据上 GPU ---------------- #
+        B, K, Da = actions.shape
+        image   = obs['images'].to(device)      # [B,K,3,H,W]
+        proprio = obs['proprio'].to(device)    # [B,K,Dp]
+
+        actions = actions.to(device)
+        timesteps = timesteps.to(device)
+        attention_mask = attention_mask.to(device)
+
+        # ---------------- 1. 语言编码 ---------------- #
+        with torch.no_grad():
+            lm_input = self.tokenizer(
+                text=list(langs),
+                add_special_tokens=True,
+                return_tensors='pt',
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_lang_length + 1     # +1 for [CLS]
+            ).to(device)
+
+            lm_embeddings = self.lm(
+                lm_input['input_ids'],
+                lm_input['attention_mask']
+            ).last_hidden_state
+
+        word_embeddings = lm_embeddings[:, 1:, :]
+        lang_mask = lm_input['attention_mask'][:, 1:]
+
+        # ---------------- 2. 图像 + proprio 编码 ---------------- #
+        B, K, C, H, W = image.shape
+        image_flat = image.reshape(B*K, 3, H, W)
+        proprio_flat = proprio.reshape(B*K, -1)
+
+        # 单路 encoder：输出 [B*K, D]，再 reshape 回 [B,K,D]
+        obs_embeddings = self.obs_encoder(image_flat, proprio_flat)  # ✅ 单路
+        obs_embeddings = obs_embeddings.reshape(B, K, -1)
+
+        T_obs = self.n_obs_steps
+        state_embeddings = obs_embeddings[:, :T_obs, :self.obs_encoder.image_feat_dim]
+        state_mask = attention_mask[:, :T_obs]
+        timesteps = timesteps[:, :T_obs]
+
+        # ---------------- 3. Option Selector ---------------- #
+        selected_options, _, _, commitment_loss, entropy = \
+            self.option_selector(
+                word_embeddings, state_embeddings, 
+                timesteps, state_mask, lang_mask
+            )
+
+        # ---------------- 4. 构造 Cond ---------------- #
+        # 注意：Transformer 版本对 input 的处理可能略有不同，这里遵循通用逻辑
+        if self.obs_as_global_cond:
+            # (模式 A) obs 作为 global_cond（flatten 时间），option 作为 local_cond（保留时间维）
+            nobs_features = obs_embeddings[:, :T_obs].reshape(B, T_obs, -1)      # [B, T_obs, D_cond]
+            cond = nobs_features
+            if self.pred_action_steps_only:
+                start = T_obs - 1
+                end = start + self.n_action_steps
+                actions = actions[:,start:end]
+
+        elif not self.obs_as_global_cond and self.option_as_global_cond:
+            cond = torch.cat([
+                selected_options[:, :T_obs],                 # [B,T_obs,option_dim]
+                obs_embeddings[:, :T_obs, -self.proprio_dim:]# [B,T_obs,proprio_dim or proprio_feat]
+            ], dim=-1)
+            if self.pred_action_steps_only:
+                start = T_obs - 1
+                end = start + self.n_action_steps
+                actions = actions[:,start:end]
+
+        else:
+            nobs_features = obs_embeddings.reshape(B, K, -1)
+            actions = torch.cat([actions, nobs_features], dim=-1).detach()
+
+        # 扩散 loss mask：padding 置 0
+        loss_mask = attention_mask.bool().unsqueeze(-1).expand(-1, -1, Da)   # [B, T, Da]
+
+        # ---------------- 5. 扩散训练 (集成逻辑) ---------------- #
+        # ✅ 直接调用内部 diffusion model 计算 Loss
+        # SkillConditionDiffusion.loss(x_start, global_cond=None, local_cond=None, loss_mask=None)
+        inner_diff_loss = self.diffusion_model.compute_loss(
+            actions, 
+            global_cond=cond, 
+            loss_mask=loss_mask,
+            lang_ctx=word_embeddings,
+            lang_mask=lang_mask
+        )
+
+        # ---------------- 6. 验证/监控 (使用 EMA Model) ---------------- #
+        with torch.no_grad():
+            # ✅ 使用内部的 EMA model 采样
+            action_pred = self.ema_model.condition_sample(
+                global_cond=cond,
+                local_cond=None,
+                horizon=K,
+                lang_ctx=word_embeddings,
+                lang_mask=lang_mask          
+            )
+
+            # 逐元素 MSE
+            val_loss = F.mse_loss(actions, action_pred, reduction='none')
+            val_loss = val_loss * loss_mask.to(val_loss.dtype)
+            denom = loss_mask.sum().clamp_min(1)
+            action_pred_loss = val_loss.sum() / denom
+
+        return {
+            'action_pred_loss': action_pred_loss,   
+            'commitment_loss': commitment_loss,
+            'inner_diff_loss': inner_diff_loss, # 返回这个 tensor 用于反向传播
+            'entropy': entropy
+        }
+
+    # ------------------------------------------------------------------ #
+    #                              INFERENCE                             #
+    # ------------------------------------------------------------------ #
+    @torch.no_grad()
+    def get_action(self,
+                langs, obs, timesteps, attention_mask=None):
+        
+        device = self.device
+        ema_diffusion_model = self.ema_model
+
+        # ---------------- 0. 拆出 obs ---------------- #
+        image   = obs['image'].to(device)      # [B,K,3,H,W]
+        proprio = obs['proprio'].to(device)    # [B,K,Dp]
+
+        B, K = proprio.shape[0], proprio.shape[1]
+        assert B == 1, "get_action 目前只实现 batch=1"
+
+        # In Simulation Environment, obs already normalized
+        if attention_mask is None:
+            attention_mask = torch.ones(B, K, device=device, dtype=torch.long)
+        attention_mask = attention_mask.to(device)
+        timesteps = timesteps.to(device)
+
+        # 1) LM Encode
+        with torch.no_grad():
+            lm_input = self.tokenizer(
+                text=list(langs),
+                add_special_tokens=True,
+                return_tensors='pt',
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_lang_length + 1     # +1 for [CLS]
+            ).to(device)
+            lm_embeddings = self.lm(
+                lm_input['input_ids'], lm_input['attention_mask']
+            ).last_hidden_state
+
+        word_embeddings = lm_embeddings[:, 1:, :]
+        lang_mask = lm_input['attention_mask'][:, 1:]
+
+        # 2) Obs Encode
+        B, K, C, H, W = image.shape
+        obs_embeddings = self.obs_encoder(
+            image.reshape(B*K, 3, H, W),
+            proprio.reshape(B*K, -1)
+        ).reshape(B, K, -1)
+
+        T_obs = self.n_obs_steps
+        state_embeddings = obs_embeddings[:, :T_obs, :self.obs_encoder.image_feat_dim]
+        state_mask = attention_mask[:, :T_obs]
+        timesteps = timesteps[:, :T_obs]
+
+        # 3) Option
+        selected_options, option_idx, soft_option_idx = self.option_selector.get_option(
+            word_embeddings, state_embeddings, 
+            timesteps, state_mask, lang_mask
+        )
+        
+        # 4) Cond
+        horizon = self.horizon
+        if self.obs_as_global_cond:
+            cond = obs_embeddings[:, :T_obs].reshape(B, T_obs, -1)
+            if self.pred_action_steps_only:
+                horizon = self.n_action_steps
+
+        elif (not self.obs_as_global_cond) and self.option_as_global_cond:
+            cond = torch.cat([
+                selected_options[:, :T_obs],
+                obs_embeddings[:, :T_obs, -self.proprio_dim:]
+            ], dim=-1)
+            if self.pred_action_steps_only:
+                horizon = self.n_action_steps
+
+        else:
+            cond = torch.zeros_like(size=selected_options.shape, device=device)
+
+        # 5) Sample
+        actions = ema_diffusion_model.condition_sample(
+            global_cond=cond,
+            horizon=horizon,
+            lang_ctx=word_embeddings,
+            lang_mask=lang_mask  
+        )
+
+        # Action Decode
+        actions = self._normalize_inv_action(actions.squeeze(0))
+        start = T_obs - 1
+        actions = actions[start:start + self.n_action_steps]
+        return actions, option_idx, soft_option_idx
+
+    def _build_diffusion_model(self, diff_args):
+        """直接构建 TransformerForDiffusion 和 SkillConditionDiffusion"""
+        action_dim   = self.action_dim
+        n_obs_steps  = self.n_obs_steps
+
+        # === 1) 决定各个 dim ===
+        # 计算观测特征总维度
+        obs_feature_dim = self.obs_encoder.feat_dim
+        if self.obs_as_global_cond:
+            input_dim = action_dim
+            cond_dim = obs_feature_dim
+
+        elif (not self.obs_as_global_cond) and self.option_as_global_cond:
+            input_dim = action_dim
+            cond_dim = self.option_dim + self.obs_encoder.proprio_feat_dim
+
+        else:
+            input_dim = action_dim + obs_feature_dim
+            cond_dim = 0
+        output_dim = input_dim 
+
+        # === 2) Transformer Backbone ===
+        backbone =  TransformerForDiffusionWithLanguage(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            horizon=self.horizon,
+            n_obs_steps=n_obs_steps,
+            cond_dim=cond_dim,
+            lang_dim=diff_args.lang_dim,
+            max_lang_tokens=diff_args.max_lang_tokens,
+            n_layer=diff_args.n_layer,
+            n_head=diff_args.n_head,
+            n_emb=diff_args.n_emb, # 假设 args 里有这个
+            p_drop_emb=diff_args.p_drop_emb,
+            p_drop_attn=diff_args.p_drop_attn,
+            causal_attn=diff_args.causal_attn,
+            time_as_cond=diff_args.time_as_cond,
+            obs_as_cond=diff_args.obs_as_cond, # 修正 typo: bs_as_cond -> obs_as_cond
+            n_cond_layers=diff_args.n_cond_layers # 修正 typo: _cond_layers -> n_cond_layers
+        )
+
+        # === 3) Scheduler / Wrapper ===
+        diffusion_model = SkillConditionDiffusion(
+            model=backbone,
+            horizon=self.horizon,
+            action_dim=action_dim,
+            n_timesteps=diff_args.n_diffusion_steps,
+            clip_denoised=diff_args.clip_denoised,
+            predict_epsilon=diff_args.predict_epsilon,
+        )
+        return diffusion_model
+
+    # ----------------------- EMA Helper Functions ----------------------- #
+    def update_ema(self):
+        """外部 Trainer 在每次 optimizer.step() 后调用此方法"""
+        self.step += 1
+        if self.step % self.update_ema_every == 0:
+            self._step_ema()
+
+    def _step_ema(self):
+        if self.step < self.step_start_ema:
+            self.ema_model.load_state_dict(self.diffusion_model.state_dict())
+        else:
+            self.ema.update_model_average(self.ema_model, self.diffusion_model)
+
+    # ----------------------- STATS / NORM ----------------------- #
+    def _load_stats(self, memmap_dir):
+        action_offset = np.load(os.path.join(memmap_dir, "action_offset.npy")).astype(np.float32)
+        action_scale = np.load(os.path.join(memmap_dir, "action_scale.npy")).astype(np.float32)
+
+        self.register_buffer('action_offset', torch.from_numpy(action_offset).view(1, -1))
+        self.register_buffer('action_scale', torch.from_numpy(action_scale).view(1, -1))
+
+    def _normalize_inv_action(self, actions):
+        return (actions - self.action_offset) / self.action_scale

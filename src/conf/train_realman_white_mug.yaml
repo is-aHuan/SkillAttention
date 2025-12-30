@@ -1,0 +1,111 @@
+# conf/train_realman_white_mug.yaml
+defaults:
+  - _self_
+  - task: realman_black_mug
+
+seed: 0
+resume: False
+project_name: "SkillAttention"
+
+wandb: True
+outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
+hydra_base_dir: ""                       # ✅ 新增，先给个空字符串占位
+
+trainer:
+  device: null
+  num_eval_episodes: 0
+  eval_every: 0
+
+  batch_size: 16
+  max_iters: 600
+  warmup_steps: 2500
+  lr_decay: 0.1
+  decay_steps: 100000
+
+  learning_rate: 1e-4
+  lm_learning_rate: 1e-6
+  os_learning_rate: 1e-4
+  weight_decay: 1e-4
+
+  log_interval: 1
+  save_interval: 50
+  render: False
+
+  checkpoint_path: ""
+
+env:
+  name: ${task.env_name}
+  skip_words: ${task.skip_words}
+
+model:
+  name: "skill_attention"
+  horizon: ${task.horizon}
+  n_obs_steps: 2
+  n_action_steps: 8
+  # 这些从 task 继承，方便不同任务改
+  action_dim: ${task.action_dim}
+  proprio_dim: ${task.proprio_dim}
+  option_dim: ${model.option_selector.option_dim}
+  obs_as_global_cond: True
+  option_as_local_cond: False
+
+  obs_encoder:
+    resize_shape: [240, 320]
+    crop_shape: [216, 288] # ch, cw 240x320 90%
+    random_crop: True
+    use_group_norm: True
+    share_rgb_model: False
+    imagenet_norm: True   # use my own dataset stats
+
+  option_selector:
+    lang_dim: 768     # Bert base uncased
+    num_options: 40
+    option_dim: 512
+    codebook_dim: 128
+    commitment_weight: 1.0
+    option_transformer:
+      n_layer: 4
+      n_head: 12
+      n_positions: 1024
+      max_ep_len: 4096
+      activation_function: "gelu"
+      dropout: 0.1
+      
+
+  expert_location: ${task.expert_location}
+  memmap_dir: ${task.memmap_dir}
+  subsample_frequency: 1
+  normalize_obs: True
+  no_lang: False
+  force_rebuild: False
+  task_name: ${task.task_lang}
+
+diffuser:
+  n_diffusion_steps: 100
+  diffusion_step_embed_dim: 128
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: True
+  clip_denoised: True
+  predict_epsilon: True
+
+  learning_rate: 1.0e-4
+  ema_decay: 0.995
+  sample_freq: 50
+  save_checkpoints: True
+  update_ema_every: 1
+  loadpath: ""  # independent diffusion module checkpoint path (".pt")
+
+hydra:
+  job:
+    # run 名字，你可以用模型名 / 任务名等
+    name: ${model.name}
+    override_dirname: ""
+  run:
+    # 单次运行的根目录：类似 /.../skdif_attention_outputs/2025-12-06/
+    dir: ${outputs_root}/${task.task_lang}/${now:%Y-%m-%d}/${now:%H-%M}
+  sweep:
+    # 如果以后用 -m 做多组实验，可以把它们放在 multirun 下面
+    dir: ${outputs_root}/${task.task_lang}/${now:%Y-%m-%d}/${now:%H-%M}
+    subdir: ${hydra.job.num}

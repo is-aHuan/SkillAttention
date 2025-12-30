@@ -1,0 +1,126 @@
+# conf/train_realman_pick_cube.yaml
+defaults:
+  - _self_
+  - task: lorel_sawyer
+
+seed: 0
+resume: False
+project_name: "SkillAttention"
+
+wandb: True
+outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
+hydra_base_dir: ""                       # ✅ 新增，先给个空字符串占位
+
+trainer:
+  device: null
+  eval_every: 1
+  num_eval_episodes: 10
+
+  batch_size: 512
+  max_iters: 800
+  warmup_steps: 2500
+  lr_decay: 0.1
+  decay_steps: 100000
+
+  learning_rate: 1e-4
+  lm_learning_rate: 1e-6
+  os_learning_rate: 1e-4
+  weight_decay: 1e-6
+  betas: [0.95, 0.999]
+
+  log_interval: 1
+  save_interval: 50
+
+  checkpoint_path: ""
+  ckt_save_path: ""
+
+env:
+  name: ${task.env_name}
+  task: ${task.env_task}
+  skip_words: ${task.skip_words}
+
+model:
+  name: "skill_attention"
+  horizon: ${task.horizon}
+  n_obs_steps: 2
+  n_action_steps: 4
+  # 这些从 task 继承，方便不同任务改
+  action_dim: ${task.action_dim}
+  proprio_dim: ${task.proprio_dim}
+  option_dim: ${model.option_selector.option_dim}
+  lang_dim: ${model.option_selector.lang_dim}
+  max_lang_length: 48       # ✅ 新增，定义最大语言长度 
+  obs_as_global_cond: False
+  option_as_global_cond: True
+  pred_action_steps_only: False
+
+  obs_encoder:
+    proprio_input_dim: ${task.proprio_dim}
+    crop_shape: [64, 64] # ch, cw
+    random_crop: True
+    use_group_norm: True
+    imagenet_norm: True   # use my own dataset stats
+
+  option_selector:
+    lang_dim: 768     # Bert base uncased
+    num_options: 20
+    option_dim: 512
+    codebook_dim: 128
+    commitment_weight: 0.1
+    option_transformer:
+      n_layer: 4
+      n_head: 12
+      n_positions: 1024
+      max_ep_len: 4096
+      activation_function: "gelu"
+      dropout: 0.1
+      
+
+  expert_location: ${task.expert_location}
+  memmap_dir: ${task.memmap_dir}
+  subsample_frequency: 1
+  normalize_obs: True
+  no_lang: False
+  force_rebuild: False
+  task_name: ${task.task_lang}
+
+diffuser:
+  # backbone: "transformer"     
+  backbone: "conditional_unet"
+  n_diffusion_steps: 100
+  diffusion_step_embed_dim: 128
+  lang_dim: ${model.lang_dim}
+  down_dims: [512, 1024, 2048]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: True
+  clip_denoised: True
+  predict_epsilon: True
+
+  # learning_rate: 1.0e-4
+  ema_decay: 0.995
+  sample_freq: 50
+  save_checkpoints: True
+  update_ema_every: 1
+
+  # Transformer backbone settings
+  max_lang_tokens: ${model.max_lang_length}
+  n_layer: 8
+  n_cond_layers: 0  # >0: use transformer encoder for cond, otherwise use MLP
+  n_head: 4
+  n_emb: 256
+  p_drop_emb: 0.0
+  p_drop_attn: 0.3
+  causal_attn: True
+  time_as_cond: True # if false, use BERT like encoder only arch, time as input
+  obs_as_cond: ${model.obs_as_global_cond}
+
+hydra:
+  job:
+    name: ${model.name}
+    override_dirname: ""
+  run:
+    dir: ${resolve_run_dir:${resume},${trainer.checkpoint_path},${outputs_root},${task.task_lang},${now:%Y-%m-%d},${now:%H-%M}}
+  sweep:
+    dir: ${outputs_root}/${task.task_lang}/${now:%Y-%m-%d}/${now:%H-%M}
+    subdir: ${hydra.job.num}
