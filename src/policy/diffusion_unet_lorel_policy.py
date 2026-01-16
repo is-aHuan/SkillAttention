@@ -36,13 +36,13 @@ class SkillAttentionUnetLorelModel(nn.Module):
         # --- Language Model ---
         self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
         self.lm = DistilBertModel.from_pretrained('distilbert-base-uncased')
-        self.lm.eval() # LM 通常冻结或只推理，看需求
+        self.lm.eval() 
 
         # --- 1) SingleImageObsEncoder ---
         obs_cfg = dict(policy_args.obs_encoder)
         self.obs_encoder = SingleImageObsEncoder(**obs_cfg)
 
-        # 2) 计算 obs_feat_dim
+        # 2) compute obs_feat_dim
         self.obs_feat_dim = self.obs_encoder.feat_dim
         
         # --- Option Selector ---
@@ -50,18 +50,18 @@ class SkillAttentionUnetLorelModel(nn.Module):
         opt_cfg['state_dim'] = self.obs_encoder.image_feat_dim
         self.option_selector = OptionSelector(**opt_cfg)
 
-        # --- 3) 构建 Diffusion Model (集成在内部) ---
+        # --- 3) build Diffusion Model ---
         self.diffusion_model = self._build_diffusion_model(diff_args)
 
-        # --- 4) 配置 EMA (集成在内部) ---
+        # --- 4) configure EMA  ---
         self.ema_decay = diff_args.ema_decay
         self.update_ema_every = diff_args.update_ema_every
-        self.step_start_ema = 5 # 可以写在 config 里
+        self.step_start_ema = 5
         self.step = 0
 
         self.ema = EMA(self.ema_decay)
-        self.ema_model = copy.deepcopy(self.diffusion_model)        # 深拷贝构建 EMA 模型
-        self.ema_model.requires_grad_(False)    # ✅ 关键：EMA 模型不需要梯度，防止 DDP 把它当做需要训练的参数
+        self.ema_model = copy.deepcopy(self.diffusion_model)        
+        self.ema_model.requires_grad_(False)    
 
         # --- Stats ---
         memmap_dir = kwargs.get('memmap_dir', None)
@@ -79,7 +79,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
                 ):
         device = self.device
         
-        # ---------------- 0. 数据上 GPU ---------------- #
+        # ---------------- 0. move data to GPU ---------------- #
         B, K, Da = actions.shape
         image   = obs['images'].to(device)      # [B,K,3,H,W]
         proprio = obs['proprio'].to(device)    # [B,K,Dp]
@@ -88,7 +88,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
         timesteps = timesteps.to(device)
         attention_mask = attention_mask.to(device)
 
-        # ---------------- 1. 语言编码 ---------------- #
+        # ---------------- 1. language encoding ---------------- #
         with torch.no_grad():
             lm_input = self.tokenizer(
                 text=list(langs),
@@ -105,7 +105,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
         word_embeddings = lm_embeddings[:, 1:, :]
         lang_mask = lm_input['attention_mask'][:, 1:]
 
-        # ---------------- 2. 图像 + proprio 编码 ---------------- #
+        # ---------------- 2. image + proprio encoding ---------------- #
         B, K, C, H, W = image.shape
         image_flat = image.reshape(B*K, 3, H, W)
         proprio_flat = proprio.reshape(B*K, -1)
@@ -125,7 +125,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
                 timesteps, state_mask, lang_mask
             )
 
-        # ---------------- 4. 构造 Cond ---------------- #
+        # ---------------- 4. Construct condition ---------------- #
         if self.obs_as_global_cond:
             global_cond = obs_embeddings[:, :T_obs].reshape(B, -1)
             local_cond = None
@@ -142,15 +142,15 @@ class SkillAttentionUnetLorelModel(nn.Module):
 
         loss_mask = attention_mask.bool().unsqueeze(-1).expand(-1, -1, Da)
 
-        # ---------------- 5. 扩散训练 (集成逻辑) ---------------- #
-        # ✅ 直接调用内部 diffusion model 计算 Loss
+        # ---------------- 5. Diffusion training (inner logic) ---------------- #
+        # Directly call internal diffusion model to compute loss
         inner_diff_loss = self.diffusion_model.compute_loss(
             actions, global_cond=global_cond, local_cond=local_cond, loss_mask=loss_mask
         )
 
-        # ---------------- 6. 验证/监控 (使用 EMA Model) ---------------- #
+        # ---------------- 6. Validation/monitoring (using EMA model) ---------------- #
         with torch.no_grad():
-            # ✅ 使用内部的 EMA model 采样
+            # Use internal EMA model to sample
             action_pred = self.ema_model.condition_sample(
                 global_cond=global_cond,
                 local_cond=local_cond,
@@ -165,7 +165,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
         return {
             'action_pred_loss': action_pred_loss,   
             'commitment_loss': commitment_loss,
-            'inner_diff_loss': inner_diff_loss, # 返回这个用于反向传播
+            'inner_diff_loss': inner_diff_loss,
             'entropy': entropy
         }
 
@@ -175,20 +175,20 @@ class SkillAttentionUnetLorelModel(nn.Module):
     @torch.no_grad()
     def get_action(self,
                 langs, obs, timesteps, attention_mask=None,
-                ema_diffusion_model=None): # 保留接口兼容性
+                ema_diffusion_model=None): 
         
         device = self.device
         
-        # ✅ 默认使用内部集成的 EMA model
+        # Default to using internal EMA model
         if ema_diffusion_model is None:
             ema_diffusion_model = self.ema_model
 
-        # ---------------- 0. 拆出 obs ---------------- #
+        # ---------------- 0. Extract obs ---------------- #
         image   = obs['image'].to(device)      # [B,K,3,H,W]
         proprio = obs['proprio'].to(device)    # [B,K,Dp]
 
         B, K = proprio.shape[0], proprio.shape[1]
-        assert B == 1, "get_action 目前只实现 batch=1"
+        assert B == 1, "get_action currently only supports batch=1"
 
         # In Simulation Environment, obs already normalized
         if attention_mask is None:
@@ -227,7 +227,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
             timesteps, state_mask, lang_mask
         )
 
-        # 4) Cond
+        # 4) Construct condition
         if self.obs_as_global_cond:
             global_cond = obs_embeddings[:, :T_obs].reshape(B, -1)
             local_cond = None
@@ -254,13 +254,12 @@ class SkillAttentionUnetLorelModel(nn.Module):
         return actions, option_idx, soft_option_idx
 
     def _build_diffusion_model(self, diff_args):
-        """直接构建 ConditionalUnet1D 和 SkillConditionDiffusion"""
+        """Directly build ConditionalUnet1D and SkillConditionDiffusion"""
         action_dim   = self.action_dim
         D_obs        = self.obs_feat_dim
         D_opt        = self.option_dim + self.obs_encoder.proprio_feat_dim
         n_obs_steps  = self.n_obs_steps
 
-        # 决定各个 dim
         if self.obs_as_global_cond:
             input_dim       = action_dim
             global_cond_dim = D_obs * n_obs_steps
@@ -297,7 +296,7 @@ class SkillAttentionUnetLorelModel(nn.Module):
 
     # ----------------------- EMA Helper Functions ----------------------- #
     def update_ema(self):
-        """外部 Trainer 在每次 optimizer.step() 后调用此方法"""
+        """Called by external Trainer after each optimizer.step()"""
         self.step += 1
         if self.step % self.update_ema_every == 0:
             self._step_ema()
@@ -321,5 +320,5 @@ class SkillAttentionUnetLorelModel(nn.Module):
         )
 
     def _normalize_inv_action(self, actions):
-        # 反归一化操作： (actions - offset) / scale
+        # Inverse normalization operation: (actions - offset) / scale
         return (actions - self.action_offset) / self.action_scale

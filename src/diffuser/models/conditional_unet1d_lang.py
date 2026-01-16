@@ -277,7 +277,7 @@ class ConditionalUnet1DWithLang(nn.Module):
                     T_min = min(T_x, T_l)
                     x[..., :T_min] = x[..., :T_min] + h_local[0][..., :T_min]
                 x = resnet2(x, global_feature)
-                x = attn(x, context=text_context, context_mask=text_mask)  # <-- 关键
+                x = attn(x, context=text_context, context_mask=text_mask)  # <-- essential
                 h.append(x)
                 x = downsample(x)
 
@@ -289,7 +289,7 @@ class ConditionalUnet1DWithLang(nn.Module):
                 x = torch.cat((x, h.pop()), dim=1)
                 x = resnet1(x, global_feature)
                 x = resnet2(x, global_feature)
-                x = attn(x, context=text_context, context_mask=text_mask)  # <-- 关键
+                x = attn(x, context=text_context, context_mask=text_mask)  # <-- essential
                 x = upsample(x)
 
             x = self.final_conv(x)

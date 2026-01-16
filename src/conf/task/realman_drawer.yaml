@@ -4,7 +4,6 @@ name: realman_drawer
 expert_location: "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/realman.pkl"
 memmap_dir: "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/memmap_cache"
 
-# "all" 使用所有任务；否则按 language_instruction 里包含该字符串过滤
 task_lang: "open_the_top_drawer"
 # task_lang: "all"
 subsample_frequency: 1
@@ -12,7 +11,7 @@ normalize_obs: True
 no_lang: False
 force_rebuild: False
 
-# 时序长度 & 维度，这些是真正依赖机器人/任务的
+# horizon, proprio_dim, action_dim 
 horizon: 16
 proprio_dim: 8        # pose(3) + quat(4) + grip(1)
 action_dim: 10        # action = pos(3) + rot6d(6) + grip(1)

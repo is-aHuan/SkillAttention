@@ -9,7 +9,7 @@ project_name: "SkillAttention"
 
 wandb: True
 outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
-hydra_base_dir: ""                       # ✅ 新增，先给个空字符串占位
+hydra_base_dir: ""                       
 
 trainer:
   device: null
@@ -43,7 +43,7 @@ model:
   horizon: ${task.horizon}
   n_obs_steps: 2
   n_action_steps: 8
-  # 这些从 task 继承，方便不同任务改
+  # adapt from task yaml
   action_dim: ${task.action_dim}
   proprio_dim: ${task.proprio_dim}
   option_dim: ${model.option_selector.option_dim}

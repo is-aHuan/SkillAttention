@@ -9,7 +9,7 @@ project_name: "SkillAttention"
 
 wandb: True
 outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
-hydra_base_dir: ""                       # ✅ 新增，先给个空字符串占位
+hydra_base_dir: ""                      
 
 trainer:
   device: null
@@ -44,12 +44,12 @@ model:
   horizon: ${task.horizon}
   n_obs_steps: 2
   n_action_steps: 4
-  # 这些从 task 继承，方便不同任务改
+  # adapt from task yaml
   action_dim: ${task.action_dim}
   proprio_dim: ${task.proprio_dim}
   option_dim: ${model.option_selector.option_dim}
   lang_dim: ${model.option_selector.lang_dim}
-  max_lang_length: 48       # ✅ 新增，定义最大语言长度 
+  max_lang_length: 48       # max tokens for language instruction
   obs_as_global_cond: False
   option_as_global_cond: True
   pred_action_steps_only: False

@@ -18,7 +18,7 @@ if __name__ == "__main__":
 import os
 os.environ["TZ"] = "Asia/Shanghai"
 
-# import gym  # 以后如果要连 env，还可以复用
+# import gym  # can be reused later if connecting to env
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -29,7 +29,7 @@ import logging
 import wandb
 import hydra
 import random
-import builtins  # ✅ 为了 monkey-patch print
+import builtins  # ✅ for monkey-patching print
 
 from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
@@ -48,7 +48,7 @@ from dataset.expert_dataset import ExpertDataset
 from dataset.expert_dataset_realman import RealmanExpertDataset
 
 
-# ----------------- DDP / 多卡相关辅助函数 -----------------
+# ----------------- DDP / helper functions -----------------
 def is_distributed() -> bool:
     return dist.is_available() and dist.is_initialized()
 
@@ -59,27 +59,27 @@ def is_main_process() -> bool:
     return get_rank() == 0
 
 def get_visible_gpus():
-    """根据 CUDA_VISIBLE_DEVICES 或 torch.cuda.device_count 估算可见 GPU 数量"""
+    """Estimate number of visible GPUs from CUDA_VISIBLE_DEVICES or torch.cuda.device_count"""
     env = os.environ.get("CUDA_VISIBLE_DEVICES", None)
     if env is not None and env.strip() != "":
-        # 例如 "0,1" -> 2
+        # e.g. "0,1" -> 2
         return len([x for x in env.split(",") if x.strip() != ""])
     if torch.cuda.is_available():
         return torch.cuda.device_count()
     return 0
 
-# ----------------- 只让主进程的 print 生效（其他文件里的 print 也受控） -----------------
+# ----------------- Only allow print on main process (also affects prints in other modules) -----------------
 def setup_rank0_print():
     """
-    重载全局 print：
-      - 非分布式 / 单进程：行为不变
-      - torchrun 场景：只在 LOCAL_RANK=0 的进程真正输出，其它进程的 print 直接忽略
+    Override global print:
+      - non-distributed / single-process: unchanged
+      - torchrun scenario: only the process with LOCAL_RANK=0 actually prints; other processes' prints are ignored
     """
     orig_print = builtins.print
 
     def rank0_print(*args, **kwargs):
         local_rank_env = os.environ.get("LOCAL_RANK", None)
-        # 非 torchrun（无 LOCAL_RANK）或者 local_rank==0：正常打印
+        # If not using torchrun (no LOCAL_RANK) or local_rank==0: print normally
         if local_rank_env is None or int(local_rank_env) == 0:
             orig_print(*args, **kwargs)
 
@@ -88,16 +88,16 @@ def setup_rank0_print():
 # ----------------- logging & helpers -----------------
 def create_global_logger(log_file=None, log_level=logging.INFO):
     """
-    创建一个全局 logger:
-      - 主进程(rank0): 输出到控制台 +（可选）文件
-      - 其他 rank: 不添加 handler，日志全部被吞掉
+    Create a global logger:
+      - main process (rank0): output to console + (optional) file
+      - other ranks: do not add handlers, logs are effectively suppressed
     """
     if is_distributed() and not is_main_process():
         os.environ.setdefault("WANDB_INIT_DISABLED", "true")
 
     logger = logging.getLogger("main")
 
-    # 清掉旧 handler，避免重复
+    # Clear old handlers to avoid duplicates
     if logger.handlers:
         logger.handlers.clear()
 
@@ -116,7 +116,6 @@ def create_global_logger(log_file=None, log_level=logging.INFO):
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
     else:
-        # 非主进程：不加 handler，并把 level 调到最高
         logger.setLevel(logging.CRITICAL + 1)
 
     logger.propagate = False
@@ -132,16 +131,16 @@ def wandb_sample_image(train_loader, memmap_dir, max_images=6):
     wrist = obs['wrist_image'] # [B, K, 3, H, W]
 
     B, K, C, H, W = head.shape
-    t0 = 0  # 想看第几帧，可以改
+    t0 = 0  # which frame to visualize, can change
 
-    # 加载 scale 和 offset 进行逆 limit 变换
+    # load scale and offset for inverse normalization
     head_offset = np.load(os.path.join(memmap_dir, "head_offset.npy")).astype(np.float32)
     head_scale = np.load(os.path.join(memmap_dir, "head_scale.npy")).astype(np.float32)
 
     wrist_offset = np.load(os.path.join(memmap_dir, "wrist_offset.npy")).astype(np.float32)
     wrist_scale = np.load(os.path.join(memmap_dir, "wrist_scale.npy")).astype(np.float32)
 
-    # 转为用于 broadcast 的形状 (C,1,1)
+    # reshape for broadcasting (C,1,1)
     head_offset = head_offset.reshape(C, 1, 1)
     head_scale = head_scale.reshape(C, 1, 1)
     wrist_offset = wrist_offset.reshape(C, 1, 1)
@@ -151,15 +150,15 @@ def wandb_sample_image(train_loader, memmap_dir, max_images=6):
     n = min(max_images, B)
 
     for i in range(n):
-        # 取第 i 个样本、第 t0 帧，形状 3xHxW，转到 cpu + numpy
+        # take i-th sample and t0 frame, shape 3xHxW, move to cpu + numpy
         head_chw  = head[i, t0].cpu().numpy().astype(np.float32)   # [3, H, W]
         wrist_chw = wrist[i, t0].cpu().numpy().astype(np.float32)  # [3, H, W]
 
-        # 逆 limit 归一化: (x - offset) / scale
+        # inverse normalization: (x - offset) / scale
         head_chw  = (head_chw - head_offset) / head_scale
         wrist_chw = (wrist_chw - wrist_offset) / wrist_scale
 
-        # 将归一化后的像素值限制在 [0, 1] 范围内
+        # clip pixels to [0, 1]
         head_chw  = np.clip(head_chw, 0.0, 1.0)
         wrist_chw = np.clip(wrist_chw, 0.0, 1.0)
 
@@ -167,7 +166,7 @@ def wandb_sample_image(train_loader, memmap_dir, max_images=6):
         head_hwc  = np.transpose(head_chw,  (1, 2, 0))  # [H, W, 3]
         wrist_hwc = np.transpose(wrist_chw, (1, 2, 0))  # [H, W, 3]
 
-        # 在宽度方向拼接：形状 [H, W_head + W_wrist, 3]
+        # concatenate along width: shape [H, W_head + W_wrist, 3]
         cat = np.concatenate([head_hwc, wrist_hwc], axis=1)
         images_to_log.append(
             wandb.Image(cat, caption=f"sample {i}, t={t0}")
@@ -182,7 +181,7 @@ def wandb_sample_lorel_image(train_loader, memmap_dir, max_images=6):
 
     im = obs['images']   # [B, K, 3, H, W]
     B, K, C, H, W = im.shape
-    t0 = 0
+    t0 = 0  # which frame to visualize
 
     image_scale = np.load(os.path.join(memmap_dir, "image_scale.npy")).astype(np.float32)
     image_offset = np.load(os.path.join(memmap_dir, "image_offset.npy")).astype(np.float32)
@@ -194,7 +193,6 @@ def wandb_sample_lorel_image(train_loader, memmap_dir, max_images=6):
     n = min(max_images, B)
 
     for i in range(n):
-        # 取第 i 个样本、第 t0 帧，形状 3xHxW，转到 cpu + numpy
         im_chw = im[i, t0].cpu().numpy().astype(np.float32)   # [3, H, W]
 
         im_chw = (im_chw - image_offset) / image_scale
@@ -214,7 +212,7 @@ def _disable_file_logging_for_non_rank0():
     if not is_distributed() or is_main_process():
         return
 
-    # 非主进程移除 FileHandler（兼容其他 logger）
+    # Remove FileHandler for non-main processes (compatible with other loggers)
     for name in ["", "root", "hydra", "main"]:
         lg = logging.getLogger(name)
         for h in list(lg.handlers):
@@ -226,20 +224,20 @@ def _disable_file_logging_for_non_rank0():
                     pass
 
 def get_args(cfg: DictConfig):
-    """根据 CUDA_VISIBLE_DEVICES / DDP 环境设置 trainer.device"""
+    """Set trainer.device based on CUDA_VISIBLE_DEVICES and DDP environment"""
     num_visible_gpus = get_visible_gpus()
 
     if num_visible_gpus > 0:
         local_rank_env = os.environ.get("LOCAL_RANK")
 
         if num_visible_gpus > 1 and local_rank_env is not None:
-            # DDP：每个进程用自己的 GPU（由 LOCAL_RANK 指定）
+            # DDP: each process uses its own GPU
             local_rank = int(local_rank_env)
             cfg.trainer.device = f"cuda:{local_rank}"
-            # 这里还用 print，后面会被 setup_rank0_print 控制，只在 rank0 打一份
+            # This print will be controlled by setup_rank0_print later; only rank0 will actually print
             print(f"DDP: num_visible_gpus={num_visible_gpus}, process using device cuda:{local_rank}")
         else:
-            # 单卡训练（即使 CUDA_VISIBLE_DEVICES 里写了多个，但没用 torchrun 也是单进程）
+            # single-process training
             cfg.trainer.device = "cuda:0"
             if num_visible_gpus > 1:
                 print(f"Single process with {num_visible_gpus} visible GPUs: using cuda:0 (no DDP).")
@@ -251,7 +249,7 @@ def get_args(cfg: DictConfig):
 
     return cfg
 
-# ----------------- RealMan 专用 dataset + dataloader -----------------
+# ----------------- RealMan-specific dataset + dataloader -----------------
 def build_realman_dataset_and_loader(args, batch_size):
     logger = logging.getLogger("main")
     device = args.trainer.device
@@ -372,7 +370,7 @@ def build_lorel_datatset_and_dataloader(args, batch_size):
     )
     return train_dataset, train_loader, train_sampler
 
-# ----------------- 训练主函数（RealMan 专用） -----------------
+# ----------------- Training -----------------
 def train(args: DictConfig):
     logger = logging.getLogger("main")
 
@@ -384,22 +382,21 @@ def train(args: DictConfig):
     logger.info(f"rank: {global_rank}, world_size: {dist.get_world_size() if is_ddp else 1}")
     logger.info(f"local_rank: {local_rank}, num_gpus: {torch.cuda.device_count()}")
 
-    # 最高层 hydra 目录已经带时间戳了，所以这里 savepath 不再额外加时间
     args.trainer.ckt_save_path = os.path.join(
         args.hydra_base_dir,
-        "checkpoints",           # 文件夹名统一叫 checkpoints 即可
+        "checkpoints",           
     )
     if global_rank == 0 and not os.path.isdir(args.trainer.ckt_save_path):
         os.makedirs(args.trainer.ckt_save_path, exist_ok=True)
 
     if 'lorel' in args.task.name:
-        # ==== LoReL 数据集 & DataLoader ====
+        # ==== LoReL dataset & DataLoader ====
         train_dataset, train_loader, train_sampler = build_lorel_datatset_and_dataloader(
             args=args,
             batch_size=args.trainer.batch_size
         )
     else:
-        # ==== RealMan 数据集 & DataLoader ====
+        # ==== RealMan dataset & DataLoader ====
         train_dataset, train_loader, train_sampler = build_realman_dataset_and_loader(
             args=args,
             batch_size=args.trainer.batch_size
@@ -412,7 +409,7 @@ def train(args: DictConfig):
                 f"{total_timesteps} timesteps in total")
     logger.info("=" * 50)
 
-    # ==== 构建 SkillAttentionModel（base model） ====
+    # ==== Build SkillAttentionModel ====
     memmap_dir = train_dataset.memmap_dir
     if 'lorel' in args.task.name:
         if args.diffuser.backbone == "transformer":
@@ -450,7 +447,7 @@ def train(args: DictConfig):
         else:
             raise ValueError(f"Unknown diffuser.backbone: {args.diffuser.backbone}")
 
-    # ===== DDP / DataParallel 包装 =====
+    # ===== DDP / DataParallel wrapping =====
     model = base_model
     if is_ddp:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -503,25 +500,25 @@ def train(args: DictConfig):
         **trainer_args,
     )
 
-    # ===== resume 逻辑 =====
+    # ===== resume logic =====
     start_iter = 1
     if args.resume:
         args.trainer.warmup_steps = 0
-        # 用 Trainer.load 恢复：模型 + optimizer + scheduler + diffusion_step
+        # Use Trainer.load to restore: model + optimizer + scheduler + diffusion_step
         meta = trainer.load(args.trainer.checkpoint_path)
         start_iter = meta.get("iter_num", 0) + 1
 
-        # ===== 检查总步数预算：主模型 & diffusion 部分 =====
+        # ===== Check total step budget: main model & diffusion part =====
         if start_iter > args.trainer.max_iters:
             logger.info(f"[Main] checkpoint iter {start_iter-1} 已经 >= max_iters={args.trainer.max_iters}，直接退出。")
             return
 
-    # ===== 用 task_name 组成实验名 =====
+    # ===== Compose experiment name using task_name =====
     task_tag = getattr(args.model, "task_name", "all")   # e.g. "pick_up_the_green_cube" / "all"
     horizon   = args.model.horizon
-    exp_name = f"{task_tag}-H{horizon}"  # RealMan 实验名：任务 + horizon
+    exp_name = f"{task_tag}-H{horizon}"  # RealMan experiment name: task + horizon
 
-    # ----------------- wandb：用 txt 文件记录 run_id -----------------
+    # ----------------- wandb: record run_id using a txt file -----------------
     if args.wandb and global_rank == 0:
         robot_name = "Lorel_Sawyer" if 'lorel' in args.task.name else "RealMan" 
         wandb_project = f"{robot_name}-{args.project_name}"
@@ -546,7 +543,7 @@ def train(args: DictConfig):
             resume="allow",
             group=args.model.name,
             config=dict(args),
-            dir=wandb_dir,          # ✅ 把 wandb 的目录锁到 hydra_base_dir/wandb
+            dir=wandb_dir,          # Lock wandb's directory to hydra_base_dir/wandb
         )
 
     if args.wandb and global_rank == 0:
@@ -572,64 +569,3 @@ def train(args: DictConfig):
 
         if args.wandb and global_rank == 0 and iter_num % args.trainer.log_interval == 0:
             wandb.log(outputs, step=iter_num)
-
-def resolve_run_dir(resume: bool, ckpt_path: str, outputs_root: str, task_lang: str, date: str, time: str) -> str:
-    if resume and ckpt_path:
-        ckpt_dir = Path(ckpt_path).parent      # .../checkpoints
-        return str(ckpt_dir.parent)           # 实验 base dir
-    # 不 resume，走原来的时间戳目录逻辑
-    return f"{outputs_root}/{task_lang}/{date}/{time}"
-
-OmegaConf.register_new_resolver("resolve_run_dir", resolve_run_dir)
-
-# ----------------- hydra main -----------------
-@hydra.main(
-    config_path="../conf",
-    config_name="train_realman",
-    version_base="1.1",
-)
-def main(cfg: DictConfig):
-    # ✅ 一进 main 就先把 print 限制为 rank0 生效（控制本文件和其他模块里的 runtime print）
-    setup_rank0_print()
-
-    # 1) 先根据 resume 决定 hydra_base_dir
-    if cfg.resume:
-        ckpt_dir = os.path.dirname(cfg.trainer.checkpoint_path)
-        hydra_base_dir = os.path.dirname(ckpt_dir)
-    else:
-        hydra_base_dir = os.getcwd()
-    cfg.hydra_base_dir = hydra_base_dir
-
-    # 2) 再根据 GPU 情况设置 device（用 CUDA_VISIBLE_DEVICES + LOCAL_RANK 的逻辑）
-    args = get_args(cfg)
-
-    # set seeds
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-
-    # 3) 如果可见 GPU 数量 >1 且存在 LOCAL_RANK，则认为是 DDP，初始化进程组
-    num_visible_gpus = get_visible_gpus()
-    if "cuda" in args.trainer.device and num_visible_gpus > 1 and os.environ.get("LOCAL_RANK") is not None:
-        torch.distributed.init_process_group(backend="nccl")
-
-    # 4) 配置 logger（只在 rank0 真正输出）
-    log_file = os.path.join(hydra_base_dir, "train.log")
-    create_global_logger(log_file=log_file, log_level=logging.INFO)
-
-    _disable_file_logging_for_non_rank0()
-
-    # 5) cuDNN 策略
-    device = torch.device(args.trainer.device)
-    if device.type == "cuda" and torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-
-    logger = logging.getLogger("main")
-    logger.info("\n" + OmegaConf.to_yaml(cfg))
-
-    train(args)
-
-
-if __name__ == "__main__":
-    main()

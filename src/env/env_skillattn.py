@@ -16,7 +16,7 @@ class LorlWrapper(gym.Wrapper):
         super(LorlWrapper, self).__init__(env)
         self.env = env
 
-        # ----- 两路归一化参数 -----
+        # ----- normalization parameters -----
         self.proprio_scale = np.load(os.path.join(memmap_dir, "proprio_scale.npy")).astype(np.float32)  
         self.proprio_offset = np.load(os.path.join(memmap_dir, "proprio_offset.npy")).astype(np.float32)
 
@@ -151,7 +151,7 @@ class LorlWrapper(gym.Wrapper):
 
         info.update({'success': success})
 
-        # 确保取到的是当前帧
+        # get current image
         if hasattr(self.env, "_get_obs"):
             im = self.env._get_obs()[:, :, :3]
         else:
@@ -165,7 +165,7 @@ class LorlWrapper(gym.Wrapper):
 
     def _make_obs(self, im_hwc):
         """
-        im_hwc: (H,W,C) float in [0,1] or uint8 (都行，下面会转 float32)
+        im_hwc: (H,W,C) float in [0,1] or uint8 (both are fine, will be converted to float32 below)
         return: dict(proprio, image, lang)
         """
         # ----- proprio -----
@@ -176,7 +176,7 @@ class LorlWrapper(gym.Wrapper):
         if im_hwc.dtype != np.float32:
             im_hwc = im_hwc.astype(np.float32)
 
-        # 如果环境给的是 0-255，这里归一到 0-1（按你 env 实际情况调整）
+        # If the environment provides 0-255, normalize to 0-1 (adjust according to your env)
         if im_hwc.max() > 1.5:
             im_hwc = im_hwc / 255.0
 

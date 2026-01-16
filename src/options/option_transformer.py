@@ -127,14 +127,13 @@ class OptionTransformer(nn.Module):
         super().__init__()
 
         self.option_dim = option_dim
-        self.hidden_size = lang_dim     # 通常我们设 hidden_size=lang_dim
+        self.hidden_size = lang_dim    
 
-        # 从 kwargs 里拿 n_layer / n_head / n_positions 等
         cfg_gpt = transformers.GPT2Config(
-            vocab_size=1,              # 不用 vocab
+            vocab_size=1,           # No vocab
             n_embd=lang_dim,        # = 768
             n_layer=kwargs.get("n_layer", 4),
-            n_head=kwargs.get("n_head", 12),   # <<< 这里设 12 或 24
+            n_head=kwargs.get("n_head", 12),   # <<< 12 or 24
             n_positions=kwargs.get("n_positions", 1024),
             n_inner=kwargs.get("n_inner", 4 * lang_dim),
             resid_pdrop=kwargs.get("resid_pdrop", 0.1),
@@ -155,13 +154,13 @@ class OptionTransformer(nn.Module):
         self.state_dim = state_dim
         self.output_attentions = kwargs["output_attentions"]
 
-        # 图像 embedding -> hidden_size（例如 768）
+        # Image embedding -> hidden_size (e.g., 768)
         self.embed_state = nn.Linear(self.state_dim, self.hidden_size)
 
-        # 语言 768 -> hidden_size（通常我们设 hidden_size=768，就等于 identity + LN）
+        # Language 768 -> hidden_size (usually we set hidden_size=768, which is identity + LN)
         self.embed_lang = nn.Linear(lang_dim, self.hidden_size)
 
-        # 时间步嵌入
+        # Timestep embedding
         self.embed_timestep = nn.Embedding(max_ep_len, self.hidden_size)
 
         self.embed_ln = nn.LayerNorm(lang_dim)
@@ -172,11 +171,11 @@ class OptionTransformer(nn.Module):
         else:
             self.transformer = GPT2Model(cfg_gpt)
 
-        # 选项预测头
+        # Option prediction heads
         self.predict_options_base = nn.Linear(self.hidden_size, self.option_dim)
         self.predict_options_add  = nn.Linear(self.hidden_size, self.option_dim)
 
-        # codebook feature -> hidden_size（别再写死 128）
+        # codebook feature -> hidden_size
         self.option_adaptor = nn.Linear(option_dim, self.hidden_size)
         self.codebook_dropout_prob = 0.1
 
@@ -189,7 +188,7 @@ class OptionTransformer(nn.Module):
                 option_hidden_states=None, 
                 **kwargs):
         """
-        word_embeddings: [B, L_text, lang_dim]  (比如 768)
+        word_embeddings: [B, L_text, lang_dim]  (e.g., 768)
         states:          [B, T, state_dim]
         timesteps:       [B, T]
         attention_mask:  [B, T]
@@ -197,17 +196,17 @@ class OptionTransformer(nn.Module):
         B, T = timesteps.shape[0], timesteps.shape[1]
         num_tokens = word_embeddings.shape[1]
 
-        # (1) 图像 → hidden_size
+        # (1) Image -> hidden_size
         state_embeddings = self.embed_state(obs_embeddings)      # [B,T,H]
 
-        # (2) 文本 → hidden_size
+        # (2) Language -> hidden_size
         lang_embeddings = self.embed_lang(word_embeddings)  # [B,L,H]
 
-        # (3) 时间嵌入 + 到 state 上
+        # (3) Timestep embedding + add to state
         time_embeddings = self.embed_timestep(timesteps)    # [B,T,H]
         state_embeddings = state_embeddings + time_embeddings
 
-        # (4) 拼在一起（lang 在前）
+        # (4) Concatenate (lang first)
         lang_mask = lang_mask.to(obs_embeddings.device)
         state_mask = attention_mask  # [B,T]
         encoder_attention_mask = None
@@ -216,14 +215,14 @@ class OptionTransformer(nn.Module):
             # option_hidden_states: [num_codes, codebook_dim]
             option_hidden_states = self.option_adaptor(option_hidden_states)   # [num_codes, H]
 
-            B = obs_embeddings.shape[0]  # 或者直接用 word_embeddings.shape[0]
+            B = obs_embeddings.shape[0]  # or word_embeddings.shape[0]
 
             # [num_codes, H] -> [1, num_codes, H] -> [B, num_codes, H]
             option_hidden_states = option_hidden_states.unsqueeze(0).expand(B, -1, -1)
             option_hidden_states = self.vq_codebook_ln(option_hidden_states)   # [B, num_codes, H]
 
             if self.training and self.codebook_dropout_prob > 0:
-                # 现在 mask 应该也是 [B, num_codes]
+                # mask shape: [B, num_codes]
                 prob_tensor = torch.full(
                     option_hidden_states.shape[:2],   # [B, num_codes]
                     1 - self.codebook_dropout_prob,

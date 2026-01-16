@@ -42,14 +42,14 @@ class Trainer:
             langs, obs, actions, timesteps, dones, attention_mask = batch
 
             B, L = actions.shape[0], actions.shape[1]
-            assert L == model.horizon, f"L={L}, horizon={model.horizon} 不一致"
+            assert L == model.horizon, f"L={L}, horizon={model.horizon} mismatch"
 
             actions = actions.float().to(self.device)
             timesteps = timesteps.long().to(self.device)
             dones = dones.long().to(self.device)
             attention_mask = attention_mask.long().to(self.device)
 
-            # ==== 调用 model.forward（里面已经做了 diffusion 训练 & 采样 & 评估）====
+            # ==== Call model.forward (which already does diffusion training & sampling & evaluation) ====
             outputs = self.model(
                 langs,
                 obs,
@@ -58,24 +58,24 @@ class Trainer:
                 attention_mask=attention_mask,
             )
 
-            action_pred_loss = outputs['action_pred_loss']       # 只用于 log
-            commitment_loss = outputs['commitment_loss']         # 训练项
-            inner_diff_loss = outputs['inner_diff_loss']         # 训练项
-            entropy, lang_entropy = outputs['entropy']           # 如果是 tuple/list
+            action_pred_loss = outputs['action_pred_loss']       # Only for logging
+            commitment_loss = outputs['commitment_loss']         # Training term
+            inner_diff_loss = outputs['inner_diff_loss']         # Training term
+            entropy, lang_entropy = outputs['entropy']           # If it's a tuple/list
 
-            # 统一成 scalar
+            # Convert to scalar
             commitment_loss = commitment_loss.mean()
             inner_diff_loss = inner_diff_loss.mean()
             entropy = entropy.mean()
             lang_entropy = lang_entropy.mean()
 
-            # ==== 总 loss：只用训练项 ====
+            # ==== Total loss: only use training terms ====
             # loss = commitment_loss + 0.01 * outer_diff_loss
-            # commitment_loss = 0 * commitment_loss.detach()  # detach()后无计算图
+            # commitment_loss = 0 * commitment_loss.detach()  # No computation graph after detach()
             loss = commitment_loss + inner_diff_loss
             loss.backward()
 
-            # 梯度累积 & clip & step
+            # Gradient accumulation & clip & step
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -83,12 +83,12 @@ class Trainer:
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            # ✅ 修改这里：处理 DDP 的 .module
+            # Modify here: handle DDP's .module
             raw_model = self.model.module if hasattr(self.model, "module") else self.model
             if hasattr(raw_model, "update_ema"):
                 raw_model.update_ema()
 
-            # ==== 统计，用 detach().item() ====
+            # ==== Statistics, use detach().item() ====
             train_losses.append(loss.detach().cpu().item())
             action_pred_losses.append(action_pred_loss.detach().cpu().item())
             inner_diffuser_losses.append(inner_diff_loss.detach().cpu().item())
@@ -98,7 +98,7 @@ class Trainer:
             mutual_info.append(entropies[-1] - lang_entropies[-1])
 
 
-        # ==== 汇总 logs ====
+        # ==== Summarize logs ====
         logs['time/training'] = time.time() - train_start
         logs['time/total'] = time.time() - self.start_time
         logs['training/train_loss_mean'] = np.mean(train_losses)
@@ -122,13 +122,13 @@ class Trainer:
     #                              SAVE / LOAD                          #
     # ------------------------------------------------------------------ #
     def save(self, iter_num, filepath, config):
-        # 先拿到实际模型（除去 DDP / DataParallel 包装）
+        # First get the actual model (excluding DDP / DataParallel wrapping)
         if hasattr(self.model, 'module'):
             model = self.model.module
         else:
             model = self.model
 
-        # 从 SkillAttentionModel 里拿到 diffusion 的 step
+        # Get the diffusion step from SkillAttentionModel
         step = model.step
         torch.save(
             {
@@ -138,7 +138,7 @@ class Trainer:
                 'iter_num': iter_num,
                 'train_dataset_max_length': getattr(self.train_loader.dataset, "max_length", None),
                 'config': config,
-                'step': step,   # ★ 新增
+                'step': step,   # ★ New addition
             },
             filepath
         )
@@ -151,7 +151,7 @@ class Trainer:
         else:
             raw_model = self.model
 
-        # 2. 加载参数
+        # 2. Load parameters
         raw_model.load_state_dict(checkpoint['model'])
 
         if self.optimizer and checkpoint.get('optimizer') is not None:
@@ -159,7 +159,7 @@ class Trainer:
         if self.scheduler and checkpoint.get('scheduler') is not None:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
 
-        # 3. 恢复 diffusion step
+        # 3. Restore diffusion step
         step = checkpoint.get('step', None)
         if step is not None:
             raw_model.step = int(step)

@@ -13,7 +13,7 @@ from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 # ------------------------------------------------------------
-# 小工具
+# tools
 # ------------------------------------------------------------
 def slugify_task_name(name: str, max_len: int = 80) -> str:
     s = name.strip().lower()
@@ -30,15 +30,15 @@ def image_to_chw_float(img: Any, shape: list[int, int]) -> Optional[np.ndarray]:
         - 形状 (3, H, W)
     """
 
-    a = None  # 最终 RGB uint8 HWC
-    target_h, target_w = shape  # Reszie Imahe
+    a = None  # final RGB uint8 HWC
+    target_h, target_w = shape  # Resize Image
 
     # 1) path
     if isinstance(img, str) and os.path.exists(img):
         bgr = cv2.imread(img, cv2.IMREAD_COLOR)
         if bgr is None:
             return None
-        # 原始是 BGR，这里转成 RGB
+        # Original is BGR, convert to RGB here
         a = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
     # 2) bytes
@@ -49,20 +49,20 @@ def image_to_chw_float(img: Any, shape: list[int, int]) -> Optional[np.ndarray]:
             return None
         a = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-    # 3) numpy 数组
+    # 3) numpy array
     elif isinstance(img, np.ndarray):
         x = img
-        # 灰度 -> 3 通道
+        # grayscale -> 3 channels
         if x.ndim == 2:
             x = np.stack([x, x, x], axis=-1)
         elif x.ndim == 3:
-            # 如果是 CHW -> 转 HWC
+            # if CHW -> convert to HWC
             if x.shape[0] in (1, 3) and x.shape[-1] not in (1, 3):
                 x = np.transpose(x, (1, 2, 0))
         else:
             return None
 
-        # 假设 x 目前是 HWC，通道就是 RGB（如果你原始数据是 BGR，这里可以改成 COLOR_BGR2RGB）
+        # Assume x is currently HWC, channels are RGB (if your original data is BGR, you can change this to COLOR_BGR2RGB)
         if x.dtype != np.uint8:
             if x.max() <= 1.0:
                 x = (x * 255.0).clip(0, 255).astype(np.uint8)
@@ -75,7 +75,7 @@ def image_to_chw_float(img: Any, shape: list[int, int]) -> Optional[np.ndarray]:
     if a is None or a.ndim != 3 or a.shape[-1] != 3:
         return None
 
-    # resize 到 resize shape
+    # resize shape
     if a.shape[0] != target_h or a.shape[1] != target_w:
         a = cv2.resize(a, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
@@ -88,8 +88,8 @@ def image_to_chw_float(img: Any, shape: list[int, int]) -> Optional[np.ndarray]:
 
 def euler_xyz_to_matrix(euler):
     """
-    euler: [..., 3], XYZ 顺序, 单位: 弧度
-    返回:  [..., 3, 3] 旋转矩阵
+    euler: [..., 3], XYZ, units: radians
+    Returns:  [..., 3, 3] rotation matrix
     """
     roll = euler[..., 0]
     pitch = euler[..., 1]
@@ -102,7 +102,7 @@ def euler_xyz_to_matrix(euler):
     cy = np.cos(yaw)
     sy = np.sin(yaw)
 
-    # R = Rz * Ry * Rx （根据你的实际约定，注意这里只是示例）
+    # R = Rz * Ry * Rx
     R = np.empty(euler.shape[:-1] + (3, 3), dtype=np.float32)
 
     R[..., 0, 0] = cy * cp
@@ -122,7 +122,7 @@ def euler_xyz_to_matrix(euler):
 def matrix_to_rot6d(R):
     """
     R: [..., 3, 3]
-    rot6d: [..., 6]，取前两列 flatten
+    rot6d: [..., 6], flatten the first two columns
     """
     rot6d = R[..., :, :2]   # [..., 3, 2]
     rot6d = rot6d.reshape(R.shape[:-2] + (6,))
@@ -134,11 +134,11 @@ def euler_to_rot6d(euler):
 
 def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
     """
-    rot6d: (..., 6), 对应 Zhou 的 6D rotation 表示:
-        第一列: R[..., 0]
-        第二列: R[..., 1]
-    返回:
-        R: (..., 3, 3)  正交旋转矩阵
+    rot6d: (..., 6), corresponding 6D rotation representation:
+        first column: R[..., 0]
+        second column: R[..., 1]
+    Returns:
+        R: (..., 3, 3)  rotation matrix
     """
     rot6d = rot6d.reshape(*rot6d.shape[:-1], 3, 2)   # (..., 3, 2)
     a1 = rot6d[..., 0]                               # (..., 3)
@@ -155,15 +155,14 @@ def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
     # b3 = b1 × b2
     b3 = np.cross(b1, b2, axis=-1)                   # (...,3)
 
-    # 拼成 R 的三列
     R = np.stack([b1, b2, b3], axis=-1)              # (..., 3, 3)
     return R.astype(np.float32)
 
 def matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
     """
     R: (..., 3, 3)
-    返回:
-        euler: (..., 3) = [roll, pitch, yaw]，XYZ 顺序
+    Returns:
+        euler: (..., 3) = [roll, pitch, yaw], XYZ order, units: radians
     """
     # pitch = -asin(R[2,0])
     pitch = -np.arcsin(R[..., 2, 0])
@@ -177,8 +176,8 @@ def matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
 
 def euler_xyz_to_quat(euler):
     """
-    euler: [..., 3], 假设是 XYZ 顺序, 单位: 弧度
-    返回:  [..., 4], 四元数 (w, x, y, z) 或你习惯的顺序
+    euler: [..., 3], XYZ , units: radians
+    returns:  [..., 4], quaternion (w, x, y, z) 
     """
     roll = euler[..., 0]
     pitch = euler[..., 1]
@@ -216,11 +215,6 @@ def _process_one_episode(
     ep: Dict[str, Any],
     target_shape: List[int],
 ) -> Optional[Dict[str, np.ndarray]]:
-    """
-    单条 episode 的处理逻辑：
-    - 和你原来 for ep in current_file_episodes 里的代码保持一致
-    - 只是打包成一个函数，方便多进程并行
-    """
     steps = ep.get("steps", [])
     if not steps:
         return None
@@ -274,7 +268,7 @@ def _process_one_episode(
     if T < 2:
         return None
 
-    # 构造动作 & obs（保持你原来的逻辑不变）
+    # Construct actions & observations
     pos   = proprio_arr[:, 0:3]
     euler = proprio_arr[:, 3:6]
     grip  = proprio_arr[:, 6:7]
@@ -315,14 +309,14 @@ def _process_one_episode(
 
 def _process_one_file(args):
     """
-    单个进程里处理一个 pkl 文件：
-      - 读取所有 episodes
-      - 任务过滤
-      - 调 _process_one_episode
-    返回:
-      local_trajs: 和 load_realman_data 返回结构一样
-      found: 当前文件里总共读到多少 ep
-      loaded: 真正留下多少有效 ep
+    Process a single .pkl file within one worker/process:
+      - read all episodes
+      - apply task filtering
+      - call _process_one_episode for each episode
+    Returns:
+      local_trajs: same structure as returned by load_realman_data
+      found: total number of episodes read from this file
+      loaded: number of valid episodes retained/loaded
     """
     f_path, target_shape, task_key = args
 
@@ -355,7 +349,7 @@ def _process_one_file(args):
 
             found += 1
 
-            # 任务过滤
+            # task filter
             if task_key is not None:
                 meta = ep.get("metadata", {}) or {}
                 instr = str(meta.get("language_instruction", "")).lower()
@@ -380,7 +374,7 @@ def _process_one_file(args):
     return local_trajs, found, loaded
 
 # ------------------------------------------------------------
-# 读取 realman pkl -> 分离 head / wrist / proprio
+# load realman pkl -> get head / wrist / proprio
 # ------------------------------------------------------------
 def load_realman_data(
     expert_locations: Union[str, List[str]],
@@ -390,8 +384,8 @@ def load_realman_data(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    从以 append_pickle 写入的 realman .pkl 中读取多条 episode。
-    每条 episode 形如:
+    Read multiple episodes from a realman .pkl file written with append_pickle.
+    Each episode has the form:
     {
       "metadata": { "language_instruction": str, ... },
       "steps": [
@@ -411,17 +405,17 @@ def load_realman_data(
       ]
     }
 
-    返回:
+    Returns:
         head_images: [num_traj] list of (T_i, 3, H, W)
         wrist_images: [num_traj] list of (T_i, 3, H, W)
         proprio: [num_traj] list of (T_i, Dp)
         actions: [num_traj] list of (T_i, Da)
         rewards: [num_traj] list of (T_i,)
-        lengths: [num_traj]
+        lengths: [num_traj] list of ints
         language: [num_traj] list of str
         dones: [num_traj] list of (T_i,)
     """
-    # 1) 统一 file_paths
+    # 1) file_paths
     if isinstance(expert_locations, str):
         file_paths = [expert_locations]
     else:
@@ -449,12 +443,12 @@ def load_realman_data(
 
     args_list = [(p, target_shape, task_key) for p in file_paths]
 
-    # workers 数量
+    # num_workers 
     if num_workers is None or num_workers <= 0:
         num_workers = min(cpu_count(), 8)
 
     if num_workers == 1 or len(args_list) == 1:
-        # 单进程顺序，方便 debug
+        # Single process sequential, convenient for debugging
         for args in args_list:
             local_trajs, found, loaded = _process_one_file(args)
             total_found += found
@@ -483,17 +477,9 @@ def load_realman_data(
 
 
 # ------------------------------------------------------------
-# 方案 B: 多 memmap + 多视角归一化 Dataset
+# Scheme: Multiple memmaps + multi-view normalization Dataset
 # ------------------------------------------------------------
 class RealmanExpertDataset(Dataset):
-    """
-    方案 B (更新版):
-      - 不再按 num_trajectories 截断，而是：
-          * task_name != all: 只用该任务的所有轨迹
-          * task_name == all: 用所有任务的所有轨迹
-      - mean/std 只用“当前选择的数据子集”来计算
-    """
-
     def __init__(self,
                  expert_locations: Union[str, List[str]],
                  subsample_frequency: int = 1,
@@ -511,7 +497,7 @@ class RealmanExpertDataset(Dataset):
                  num_workers: int = 24,
                  **kwargs):
         super().__init__()
-        assert memmap_dir is not None, "建议 realman 一定指定 memmap_dir，减小内存压力"
+        assert memmap_dir is not None, "It is recommended to always specify memmap_dir for realman to reduce memory pressure"
 
         self.kwargs = kwargs
         self.full_traj = full_traj
@@ -522,7 +508,7 @@ class RealmanExpertDataset(Dataset):
         self.img_shape = list(image_shape)
         self.num_workers = num_workers
 
-        # ===== memmap 目录命名 =====
+        # ===== memmap directory naming =====
         #   - task_name = "pick up the green cube" → _realman_pick_up_the_green_cube
         #   - task_name = all                      → _realman_all
         if task_name == "all":
@@ -532,7 +518,6 @@ class RealmanExpertDataset(Dataset):
         self.memmap_dir = f"{memmap_dir}_realman_{safe_task}"
         os.makedirs(self.memmap_dir, exist_ok=True)
 
-        # 各种路径（不变）
         self.meta_path = os.path.join(self.memmap_dir, "meta.json")
         self.lengths_path = os.path.join(self.memmap_dir, "lengths.npy")
         self.lang_path = os.path.join(self.memmap_dir, "language.json")
@@ -553,29 +538,29 @@ class RealmanExpertDataset(Dataset):
         self.action_scale_path = os.path.join(self.memmap_dir, "action_scale.npy")
         self.action_offset_path = os.path.join(self.memmap_dir, "action_offset.npy")
 
-        # ===== rank0 写 / 其他 rank 附着 =====
+        # ===== rank0 write / other ranks attach =====
         if writer and (force_rebuild or not self._memmap_exists()):
-            # 1) 多进程一次性把所有需要的 episode 解析成 numpy（高内存、但很快）
+            # 1) Use multiprocessing to parse all required episodes into numpy arrays at once (high memory, but fast)
             trajs = load_realman_data(
                 expert_locations=expert_locations,
                 target_shape=self.img_shape,
                 task_name=self.task_name,
-                num_workers=self.num_workers,      # ✅ 用多进程加速
+                num_workers=self.num_workers,      # Use multiprocessing to speed up
             )
 
-            # 2) 可选：按 horizon 切成小段轨迹
+            # 2) Optional: chunk trajectories by horizon
             if chunk_horizon is not None:
                 print("[Dataset] Chunking trajectories...")
                 trajs = self._chunk_trajectories(trajs, chunk_horizon)
 
-            # 3) 一次 concat，顺手算 scale/offset + 写 memmap
+            # 3) Concatenate, calculate scale/offset, and write memmap
             print("[Dataset] Building memmaps and computing stats...")
             self._build_memmaps_and_stats(trajs)
 
-        # 所有 rank：attach memmap
+        # All ranks: attach memmap
         self._attach_memmaps()
 
-        # 准备 trajectory 索引 & max_length
+        # Prepare trajectory indices & max_length
         self.max_length = int(np.max(self.trajectories["lengths"]))
         self.horizon = chunk_horizon
 
@@ -585,7 +570,7 @@ class RealmanExpertDataset(Dataset):
             raise NotImplementedError("当前只支持 full_traj=True")
 
     # --------------------------------------------------------
-    # 内部工具
+    # Tools
     # --------------------------------------------------------
     def _memmap_exists(self) -> bool:
         paths = [
@@ -600,15 +585,13 @@ class RealmanExpertDataset(Dataset):
                             ss: int,
                             seed: int):
         """
-        加载 RealMan 数据，并按当前 task_name 过滤：
-          - task_name != "all": load_realman_data(..., task_name=self.task_name) → 单任务
-          - task_name == "all": load_realman_data(..., task_name="all")           → 所有任务
-        然后只做 subsample，不再随机裁掉轨迹数量。
+        Load RealMan data and filter by the current task_name:
+          - task_name != "all": load_realman_data(..., task_name=self.task_name) → single task
+          - task_name == "all": load_realman_data(..., task_name="all")           → all tasks
+        Then only do subsample, no longer randomly cut the number of trajectories.
         """
-        # 这里假设 load_realman_data 本身支持 task_name="all" 表示 "all tasks"
         trajs = load_realman_data(expert_locations, target_shape=self.img_shape, task_name=self.task_name)
 
-        # 如果你以后又想支持“最多只取前 N 条”，可以单独定义一个 max_trajectories 参数：
         # max_traj = getattr(self, "max_trajectories", None)
         # if max_traj is not None:
         #     for k, v in trajs.items():
@@ -633,14 +616,14 @@ class RealmanExpertDataset(Dataset):
         lengths = np.array(trajs["lengths"], dtype=np.int64)
         total_T = int(lengths.sum())
 
-        # 一次 concat
+        # concat
         head_np   = np.concatenate(trajs["head_images"], axis=0).astype(np.float32)
         wrist_np  = np.concatenate(trajs["wrist_images"], axis=0).astype(np.float32)
         proprio_np= np.concatenate(trajs["proprio"],      axis=0).astype(np.float32)
         actions_np= np.concatenate(trajs["actions"],      axis=0).astype(np.float32)
         dones_np  = np.concatenate(trajs["dones"],        axis=0).astype(np.uint8)
 
-        # ====== 1) 计算 scale / offset（和原来完全一样） ======
+        # ====== 1) Calculate scale / offset ======
         head_min = head_np.min(axis=(0, 2, 3))
         head_max = head_np.max(axis=(0, 2, 3))
         head_range = head_max - head_min
@@ -675,13 +658,13 @@ class RealmanExpertDataset(Dataset):
         np.save(self.action_scale_path,  action_scale.astype(np.float32))
         np.save(self.action_offset_path, action_offset.astype(np.float32))
 
-        # ====== 2) 写 memmap ======
+        # ====== 2) Write memmap ======
         self._write_memmap(self.head_path,   head_np)
         self._write_memmap(self.wrist_path,  wrist_np)
         self._write_memmap(self.proprio_path, proprio_np)
         self._write_memmap(self.actions_path, actions_np)
 
-        # rewards 全 0：直接创建，不用拼 list
+        # rewards all 0: create directly, no need to concatenate list
         rewards_np = np.zeros((total_T,), dtype=np.float32)
         self._write_memmap(self.rewards_path, rewards_np)
         self._write_memmap(self.dones_path,   dones_np)
@@ -777,7 +760,7 @@ class RealmanExpertDataset(Dataset):
 
     def _chunk_trajectories(self, trajs: Dict[str, List[np.ndarray]], horizon: int) -> Dict[str, List[np.ndarray]]:
         """
-        把每条原始轨迹按 horizon 切成多个子轨迹，最后一段长度 < horizon 也保留。
+        Split each original trajectory into multiple sub-trajectories by horizon, keeping the last segment even if its length < horizon.
         """
         new_traj: Dict[str, List] = {
             "head_images": [],
@@ -816,13 +799,13 @@ class RealmanExpertDataset(Dataset):
         return new_traj
 
     # --------------------------------------------------------
-    # Dataset 接口
+    # Dataset api
     # --------------------------------------------------------
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx: int):
-        assert self.full_traj, "当前只实现 full_traj=True 模式"
+        assert self.full_traj, "Currently only full_traj=True mode is implemented"
 
         start = int(self.trajectory_indices[idx])
         end = int(self.trajectory_indices[idx + 1])
@@ -835,9 +818,9 @@ class RealmanExpertDataset(Dataset):
 
         T = head.size(0)
 
-        # 归一化
+        # Normalization
         if self.normalize_obs:
-            # 使用 scale 和 offset 进行归一化
+            # Use scale and offset 
             head = (head * self.head_scale[None, :, None, None]) + self.head_offset[None, :, None, None]
             wrist = (wrist * self.wrist_scale[None, :, None, None]) + self.wrist_offset[None, :, None, None]
             proprio = (proprio * self.proprio_scale[None, :]) + self.proprio_offset[None, :]
@@ -849,7 +832,7 @@ class RealmanExpertDataset(Dataset):
         attention_mask = torch.ones(T, dtype=torch.float32)
         language = '' if self.no_lang else self.trajectories["language"][idx]
 
-        # pad 到 horizon
+        # pad to horizon
         L = self.horizon
         head = self._pad_torch(head, L)
         wrist = self._pad_torch(wrist, L)
@@ -859,7 +842,6 @@ class RealmanExpertDataset(Dataset):
         timesteps = self._pad_torch(timesteps, L)
         attention_mask = self._pad_torch(attention_mask, L)
 
-        # obs dict 更接近 Diffusion Policy 的接口
         obs = {
             'head_image': head,      # (T_max, 3, H, W)
             'wrist_image': wrist,    # (T_max, 3, H, W)
@@ -870,15 +852,13 @@ class RealmanExpertDataset(Dataset):
 
 
 # ------------------------------------------------------------
-# 简单测试
+# Test
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    # 你可以在本地测试一下：
-    # 注意请改成你自己的 pkl 路径和 task 名字
     pkl_path = "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/realman.pkl"
     memmap_dir = "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/memmap_cache"
 
-    # 第一次跑用 writer=True 建 memmap
+    # First run with writer=True to build memmap
     ds = RealmanExpertDataset(
         expert_location=pkl_path,
         subsample_frequency=1,
@@ -890,7 +870,7 @@ if __name__ == "__main__":
         writer=True,
         force_rebuild=False,
         task_name="pick up the green cube",
-        chunk_horizon=50,  # 可选：按 horizon 切成子轨迹
+        chunk_horizon=50,  # Split into sub-trajectories by horizon
     )
 
     print("len(dataset) =", len(ds))

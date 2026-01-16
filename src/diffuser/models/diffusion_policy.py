@@ -30,7 +30,7 @@ class SkillConditionDiffusion(nn.Module):
         # self.condition_guidance_w = condition_guidance_w
         # self.returns_condition = returns_condition  # 用 classifier-free guidance 与否
 
-        # --- diffusion 系数初始化（和你原来基本一样） ---
+        # --- diffusion coefficients initialization ---
         betas = cosine_beta_schedule(n_timesteps)
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
@@ -61,7 +61,7 @@ class SkillConditionDiffusion(nn.Module):
             (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))
 
 
-    # ========= 前向/反向公式 =========
+    # ========= Forward/Backward formulas =========
     def predict_start_from_noise(self, x_t, t, noise):
         if self.predict_epsilon:
             return (
@@ -86,15 +86,14 @@ class SkillConditionDiffusion(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    # ========= 调 Unet（有 local_cond/global_cond） =========
+    # ========= Unet (with local_cond/global_cond) =========
     def p_mean_variance(self, x, t, global_cond=None, local_cond=None):
         """
         x          : [B, H, Da]
         t          : [B]
         global_cond: [B, Dg]  option embedding
-        local_cond : [B, H, Dl]  obs 编码
+        local_cond : [B, H, Dl]  observation embedding
         """
-        # 只用一个 conditional 模型，无 CFG
         eps = self.model(
             x, t, local_cond=local_cond, global_cond=global_cond
         )  # [B, H, Da]
@@ -112,7 +111,7 @@ class SkillConditionDiffusion(nn.Module):
             x, t, global_cond=global_cond, local_cond=local_cond
         )
 
-        # 最后一步（t = 0）通常不加噪声
+        # The last step (t = 0) usually does not add noise
         if (t == 0).all():
             return model_mean
 
@@ -137,7 +136,6 @@ class SkillConditionDiffusion(nn.Module):
         #         diffusion.append(x)
         # progress.close()
 
-        # 直接不要 progress 了
         for i in reversed(range(self.n_timesteps)):
             t = torch.full((B,), i, device=device, dtype=torch.long)
             x = self.p_sample(x, t, global_cond=global_cond, local_cond=local_cond)
@@ -157,10 +155,10 @@ class SkillConditionDiffusion(nn.Module):
         shape = (B, horizon, self.action_dim)
         return self.p_sample_loop(shape, global_cond=global_cond, local_cond=local_cond)
 
-    # ========= 训练 loss（纯 diffusion） =========
+    # ========= Training loss (pure diffusion) =========
     def p_losses(self, x_start, t, global_cond=None, local_cond=None, loss_mask=None):
         """
-        x_start       : [B, H, Da]  干净动作序列
+        x_start       : [B, H, Da]  ground-truth action sequence
         global_cond   : [B, Dg]
         local_cond    : [B, H, Dl]
         loss_mask     : [B, H, Da]  padding = 0, truth_data = 1
@@ -185,7 +183,7 @@ class SkillConditionDiffusion(nn.Module):
 
     def loss(self, actions, global_cond=None, local_cond=None, loss_mask=None):
         """
-        actions       : [B, H, Da]  训练时的 GT 动作序列
+        actions       : [B, H, Da]  ground-truth action sequence
         """
         B = actions.shape[0]
         t = torch.randint(0, self.n_timesteps, (B,), device=actions.device).long()

@@ -21,18 +21,18 @@ app = FastAPI()
 model: Optional[SkillAttentionUnetModel] = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 每个 websocket 维护一个 session
+# Each websocket maintains one session
 sessions: Dict[WebSocket, "InferenceSession"] = {}
 
 
-# ----------------------- 一些小工具函数 -----------------------
+# ----------------------- Some utility functions -----------------------
 def _to_chw_float(x: Any) -> torch.Tensor:
     """
-    将用户传来的 head / wrist 图像转成:
+    Convert user-provided head/wrist image to:
         - numpy float32
         - [0,1]
-        - 形状 (3, H, W)
-    支持 HWC / CHW，通道 3 或 1（灰度会三通道复制）。
+        - shape (3, H, W)
+    Supports HWC / CHW, and 3 or 1 channels (grayscale will be duplicated to 3 channels).
     """
     arr = np.array(x, dtype=np.float32)
 
@@ -43,7 +43,7 @@ def _to_chw_float(x: Any) -> torch.Tensor:
     if arr.shape[-1] in (1, 3):
         arr = np.transpose(arr, (2, 0, 1))
     elif arr.shape[0] in (1, 3):
-        # 已经是 CHW
+        # already CHW
         pass
     else:
         raise ValueError(f"cannot infer channel dimension from shape {arr.shape}")
@@ -57,19 +57,19 @@ def _to_chw_float(x: Any) -> torch.Tensor:
 # ----------------------- InferenceSession -----------------------
 class InferenceSession:
     """
-    每个 WebSocket 维护一个 Session：
-      - 累积多帧 head / wrist / proprio
-      - 记录语言指令
-      - 在需要时调用 model.get_action
+    Each WebSocket keeps a Session:
+      - accumulates multiple frames of head / wrist / proprio
+      - records language instruction
+      - calls model.get_action when needed
     """
     def __init__(self, model, device: torch.device):
         self.model = model
         self.device = device
 
-        # 仅保存最近两帧观测数据
-        self.head_frames: List[torch.Tensor] = []     # 每帧 [3,H,W]
-        self.wrist_frames: List[torch.Tensor] = []    # 每帧 [3,H,W]
-        self.proprio_frames: List[torch.Tensor] = []  # 每帧 [Dp]
+        # Only keep the most recent two frames
+        self.head_frames: List[torch.Tensor] = []     # each frame [3,H,W]
+        self.wrist_frames: List[torch.Tensor] = []    # each frame [3,H,W]
+        self.proprio_frames: List[torch.Tensor] = []  # each frame [Dp]
         self.lang: Optional[str] = None
 
     def append_observation(
@@ -79,13 +79,13 @@ class InferenceSession:
         proprio: Any,
         lang: Optional[str] = None,
     ):
-        # 1) 图像 -> CHW float tensor
+        # 1) image -> CHW float tensor
         head_chw = _to_chw_float(head_img).to(self.device)
         wrist_chw = _to_chw_float(wrist_img).to(self.device)
 
         # 2) proprio -> 1D float tensor
         if proprio is None:
-            raise ValueError("proprio (机器人状态向量) 不能为空")
+            raise ValueError("proprio (robot state vector) cannot be None")
         proprio_arr = np.array(proprio, dtype=np.float32)
         if proprio_arr.ndim != 1:
             raise ValueError(f"proprio must be 1D, got shape {proprio_arr.shape}")
@@ -96,12 +96,12 @@ class InferenceSession:
             )
         proprio_t = torch.from_numpy(proprio_arr).to(self.device)
 
-        # 3) 追加到历史，仅保留最近两帧
+        # 3) append to history, keep only the most recent frames
         self.head_frames.append(head_chw)
         self.wrist_frames.append(wrist_chw)
         self.proprio_frames.append(proprio_t)
 
-        # 保证历史帧数最多为 self.model.n_obs_steps 
+        # Ensure history length is at most self.model.n_obs_steps 
         if len(self.head_frames) > self.model.n_obs_steps:
             self.head_frames.pop(0)
         if len(self.wrist_frames) > self.model.n_obs_steps:
@@ -109,36 +109,36 @@ class InferenceSession:
         if len(self.proprio_frames) > self.model.n_obs_steps:
             self.proprio_frames.pop(0)
 
-        # 4) 初次设置语言
+        # 4) set language on first provided value
         if lang is not None and self.lang is None:
             self.lang = lang
 
     @torch.no_grad()
     def plan_actions(self) -> List[List[float]]:
         """
-        构造 obs / timesteps / attention_mask 调用 SkillAttentionModel.get_action。
-        返回 [n_action_steps, action_dim] 的 Python list。
+        Build obs / timesteps / attention_mask and call SkillAttentionModel.get_action.
+        Returns a Python list of shape [n_action_steps, action_dim].
         """
         if len(self.head_frames) == 0:
             raise RuntimeError("no observation yet")
 
-        # 使用最近 n_obs_steps 帧
+        # Use the most recent n_obs_steps frames
         K = self.model.n_obs_steps 
 
         head = torch.stack(self.head_frames[-K:], dim=0)    # [K,3,H,W]
         wrist = torch.stack(self.wrist_frames[-K:], dim=0)  # [K,3,H,W]
         proprio = torch.stack(self.proprio_frames[-K:], dim=0)  # [K,Dp]
 
-        # 扩 batch 维：B=1
+        # add batch dimension: B=1
         head = head.unsqueeze(0)      # [1,K,3,H,W]
         wrist = wrist.unsqueeze(0)    # [1,K,3,H,W]
-        proprio = proprio.unsqueeze(0)  # [1,K,Dp]K
+        proprio = proprio.unsqueeze(0)  # [1,K,Dp]
 
-        # timesteps 就简单用 [0..1]，和训练中 step 编码一致即可
+        # timesteps just use [0..K-1], consistent with training step encoding
         timesteps = torch.arange(K, device=self.device, dtype=torch.long).unsqueeze(0)  # [1,K]
-        attention_mask = torch.ones(1, K, dtype=torch.long, device=self.device)         # [1,2]
+        attention_mask = torch.ones(1, K, dtype=torch.long, device=self.device)         # [1,K]
 
-        # 调用模型
+        # call model
         actions = self.model.get_action(
             langs=[self.lang or ""],
             obs={
@@ -164,9 +164,9 @@ async def ws_infer(ws: WebSocket):
             raw = await ws.receive_text()
             msg = json.loads(raw)
 
-            # 兼容两种输入形式：
-            # 1) 直接 head / wrist
-            # 2) 只有 state（6 通道） -> 自动切成 head / wrist
+            # Support two input formats:
+            # 1) direct head / wrist
+            # 2) only state (6 channels) -> automatically split into head / wrist
             head = msg.get("head")
             wrist = msg.get("wrist")
 
@@ -182,7 +182,7 @@ async def ws_infer(ws: WebSocket):
             request_action = bool(msg.get("request_action", True))
 
             global model, device
-            # 第一次消息时创建 session
+            # create session on first message
             if sess is None:
                 if model is None:
                     await ws.send_text(json.dumps({"ok": False, "error": "model not loaded"}))
@@ -190,14 +190,14 @@ async def ws_infer(ws: WebSocket):
                 sess = InferenceSession(model, device)
                 sessions[ws] = sess
 
-            # 追加观测
+            # append observation
             try:
                 sess.append_observation(head, wrist, proprio, lang)
             except Exception as e:
                 await ws.send_text(json.dumps({"ok": False, "error": f"append_observation: {e}"}))
                 continue
 
-            # 是否需要返回动作
+            # whether to return an action
             if request_action:
                 try:
                     actions = await asyncio.to_thread(sess.plan_actions)
@@ -217,30 +217,30 @@ async def ws_infer(ws: WebSocket):
         sessions.pop(ws, None)
 
 
-# ----------------------- 构建 & 加载模型 -----------------------
+# ----------------------- Build & load model -----------------------
 def build_model_from_checkpoint(
     ckpt_path: str,
     device: torch.device,
     memmap_dir: Optional[str] = None,
 ):
     """
-    从 Trainer.save 存的 ckpt 构建并加载 SkillAttentionModel，
-    如有需要再用 DiffTrainer.load 加载单独的 diffusion .pt。
+    Build and load a SkillAttentionModel from a checkpoint saved by Trainer.save.
+    If needed, use DiffTrainer.load to load a separate diffusion .pt.
     """
     ckpt = torch.load(ckpt_path, map_location="cpu")
     if "config" not in ckpt or "model" not in ckpt:
-        raise RuntimeError("checkpoint 缺少 'config' 或 'model' 字段")
+        raise RuntimeError("checkpoint missing 'config' or 'model' field")
 
     cfg: DictConfig = ckpt["config"]
     policy_args = cfg.model
     diff_args = cfg.diffuser
 
-    # memmap_dir：优先 CLI 传入，其次 config.task.memmap_dir
+    # memmap_dir: prefer CLI argument, otherwise try config.task.memmap_dir
     if memmap_dir is None:
         if hasattr(cfg, "task") and hasattr(cfg.task, "memmap_dir"):
             memmap_dir = cfg.task.memmap_dir
         else:
-            raise RuntimeError("请通过 --memmap_dir 指定包含 *_scale.npy / *_offset.npy 的目录")
+            raise RuntimeError("please specify --memmap_dir containing *_scale.npy / *_offset.npy files")
 
     if diff_args.backbone == "transformer":
         model = SkillAttentionTransformerLangModel(
@@ -289,12 +289,12 @@ def init_runtime(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True,
-                        help="Trainer.save 生成的 .ckpt 文件路径")
+                        help="Trainer.save generated .ckpt file path")
     parser.add_argument("--memmap_dir", default=None,
-                        help="包含 head_* / wrist_* / proprio_* / action_* .npy 的目录；"
-                             "如果不提供，则尝试从 ckpt['config'].task.memmap_dir 读取")
+                        help="Directory containing head_* / wrist_* / proprio_* / action_* .npy files; "
+                             "if not provided, try to read from ckpt['config'].task.memmap_dir")
     parser.add_argument("--device", default=None,
-                        help="例如 'cuda:0' 或 'cpu'，默认自动选择")
+                        help="e.g. 'cuda:0' or 'cpu', auto-select by default")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()

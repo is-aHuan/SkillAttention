@@ -125,14 +125,14 @@ def viz_matrix2(words_dict, num_options, step, skip_words, figure_title='', labe
     # plt.show()
     plt.close()
 
-def viz_matrix2_weighted(words_dict, num_options, step, skip_words, figure_title='',labelsize=15):  # labelsize=12
-    skip_words.extend(['and',',','.','t'])
+def viz_matrix2_weighted(words_dict, num_options, step, skip_words, figure_title='', labelsize=15):  # labelsize=12
+    skip_words.extend(['and', ',', '.', 't'])
     
-    # 1. 从新的数据结构中提取所有词语
+    # 1. Extract all words from the new data structure
     all_words_with_scores = [item for sublist in words_dict.values() for item in sublist]
     words_set = {list(d.keys())[0] for d in all_words_with_scores}
 
-    for item in list(words_set): # Iterate over a copy
+    for item in list(words_set):  # Iterate over a copy
         if item.startswith('##'):
             skip_words.append(item)
 
@@ -140,7 +140,7 @@ def viz_matrix2_weighted(words_dict, num_options, step, skip_words, figure_title
     # "/home/zxliang/new-code/LISA-hot/lisa"
 
     def w_to_ind(word):
-        # 使用 try-except 避免因词语被跳过而引发错误
+        # Use try-except to avoid errors due to skipped words
         try:
             return words.index(word)
         except ValueError:
@@ -148,10 +148,10 @@ def viz_matrix2_weighted(words_dict, num_options, step, skip_words, figure_title
 
     matrix = np.zeros([len(words), num_options])
 
-    # 2. 累加每个词语在对应技能下的注意力分数
+    # 2. Accumulate attention scores for each word under the corresponding skill
     for o in range(num_options):
         for item_dict in words_dict[o]:
-            # 每个 item_dict 是一个 {word: score} 形式的字典
+            # Each item_dict is a dictionary in the form {word: score}
             word, score = list(item_dict.items())[0]
             if word not in skip_words:
                 idx = w_to_ind(word)

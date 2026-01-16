@@ -335,12 +335,11 @@ class CosineSimCodebook(nn.Module):
         decay=0.8,
         eps=1e-5,
         threshold_ema_dead_code=2,
-        # 新增：随机化相关超参（默认关闭）
-        code_dropout_p: float = 0.0,       # 训练时随机屏蔽码字的概率
-        per_sample_dropout: bool = True,   # True: 每个样本独立屏蔽；False: 整个 batch 共享同一遮罩
-        gumbel_noise: float = 0.0,         # 往相似度加的 Gumbel 噪声强度（0 为关闭）
-        sample_top_k: int | None = None,   # 若 >1：在 top-k 中随机选一个
-        ema_bins_from_greedy: bool = False # 用贪心最近邻统计 EMA，减少统计偏差
+        code_dropout_p: float = 0.0,       # Probability of randomly dropping codebooks during training
+        per_sample_dropout: bool = True,   # True: each sample independently dropped; False: same mask for entire batch
+        gumbel_noise: float = 0.0,         # Strength of Gumbel noise added to similarity (0 to disable)
+        sample_top_k: int | None = None,   # If >1: randomly select one from top-k
+        ema_bins_from_greedy: bool = False # Use greedy nearest neighbor for EMA statistics to reduce bias
     ):
         super().__init__()
         self.decay = decay
@@ -355,7 +354,6 @@ class CosineSimCodebook(nn.Module):
         self.eps = eps
         self.threshold_ema_dead_code = threshold_ema_dead_code
 
-        # 新增超参保存
         self.code_dropout_p = float(code_dropout_p)
         self.per_sample_dropout = bool(per_sample_dropout)
         self.gumbel_noise = float(gumbel_noise)
@@ -398,12 +396,12 @@ class CosineSimCodebook(nn.Module):
 
     def _apply_code_dropout(self, dist: torch.Tensor, greedy_idx: torch.Tensor | None):
         """
-        对相似度矩阵 dist [N, C] 进行随机屏蔽与/或加噪，仅在训练时调用。
-        返回 masked_dist，用于后续选码字。
+        Randomly masks and/or adds noise to the similarity matrix dist [N, C], only called during training.
+        Returns masked_dist, used for subsequent codebook selection.
         """
         masked_dist = dist
 
-        # 1) 随机屏蔽部分码字（codebook dropout）
+        # 1) Randomly mask some codebooks (codebook dropout)
         if self.code_dropout_p > 0.0:
             if self.per_sample_dropout:
                 drop_mask = (torch.rand_like(dist) < self.code_dropout_p)
@@ -413,21 +411,21 @@ class CosineSimCodebook(nn.Module):
 
             masked_dist = dist.masked_fill(drop_mask, -1e9)
 
-            # 保护：若某行被全屏蔽，则回退为未屏蔽（或至少放开贪心 idx）
+            # Protection: if a row is fully masked, revert to unmasked (or at least unlock greedy idx)
             all_dropped = drop_mask.all(dim=-1)
             if all_dropped.any():
                 if greedy_idx is None:
-                    # 直接完全回退该行
+                    # Fully revert the row
                     masked_dist[all_dropped] = dist[all_dropped]
                 else:
-                    # 仅解锁贪心位置，确保至少有一个可选
+                    # Only unlock the greedy position to ensure at least one option
                     rows = torch.where(all_dropped)[0]
-                    masked_dist[rows] = masked_dist[rows]  # no-op 为了清晰
+                    masked_dist[rows] = masked_dist[rows]  # no-op for clarity
                     masked_dist[rows, greedy_idx[rows]] = dist[rows, greedy_idx[rows]]
 
-        # 2) Gumbel 噪声（Gumbel-Max 采样）
+        # 2) Gumbel noise (Gumbel-Max sampling)
         if self.gumbel_noise > 0.0:
-            # 经典 Gumbel(0,1)
+            # Classic Gumbel(0,1)
             u = torch.rand_like(masked_dist).clamp_(min=1e-9, max=1 - 1e-9)
             g = -torch.log(-torch.log(u))
             masked_dist = masked_dist + self.gumbel_noise * g
@@ -436,14 +434,14 @@ class CosineSimCodebook(nn.Module):
 
     def _choose_indices(self, masked_dist: torch.Tensor):
         """
-        从 masked_dist 选择码字索引。
-        支持 top-k 均匀随机；否则用 argmax。
+        Select codebook indices from masked_dist.
+        Supports uniform random selection from top-k; otherwise uses argmax.
         """
         if (self.sample_top_k is not None) and (self.sample_top_k > 1):
             k = min(self.sample_top_k, masked_dist.size(-1))
             topk = masked_dist.topk(k, dim=-1)
             topk_idx = topk.indices  # [N, k]
-            # 在每行 top-k 里均匀随机一个
+            # Uniformly randomly select one from top-k in each row
             n = masked_dist.size(0)
             r = torch.randint(k, (n,), device=masked_dist.device)
             chosen = topk_idx[torch.arange(n, device=masked_dist.device), r]
@@ -459,13 +457,13 @@ class CosineSimCodebook(nn.Module):
         self.init_embed_(flatten)
 
         embed = l2norm(self.embed)
-        # 原始相似度（作为返回 & 可选用于 EMA 统计的“贪心”）
+        # Original similarity (used for return & optionally for EMA statistics "greedy")
         dist = flatten @ embed.t()  # [N, C]
 
-        # 贪心最近邻（用于可选的稳定 EMA 统计）
+        # Greedy nearest neighbor (used for optional stable EMA statistics)
         greedy_idx = dist.max(dim=-1).indices
 
-        # 训练期可选：对相似度进行随机屏蔽/加噪 => 采样式选码字
+        # During training, optionally apply random masking/noise to similarity => sampling-style codebook selection
         if self.training and (self.code_dropout_p > 0.0 or self.gumbel_noise > 0.0 or (self.sample_top_k is not None and self.sample_top_k > 1)):
             masked_dist = self._apply_code_dropout(dist, greedy_idx=greedy_idx)
             chosen_idx = self._choose_indices(masked_dist)
@@ -477,7 +475,7 @@ class CosineSimCodebook(nn.Module):
         quantize = F.embedding(embed_ind, self.embed)
 
         if self.training:
-            # 统计用的 one-hot：可选使用贪心或实际选中的索引
+            # One-hot for statistics: optionally use greedy or actually selected indices
             bins_idx = greedy_idx if self.ema_bins_from_greedy else chosen_idx
             embed_onehot = F.one_hot(bins_idx, self.codebook_size).type(dtype)
 
@@ -494,10 +492,10 @@ class CosineSimCodebook(nn.Module):
 
             ema_inplace(self.embed, embed_normalized, self.decay)
 
-            # 注意：若使用较大的 dropout/随机化，可能导致“死亡码字”偏多
+            # Note: Using large dropout/randomization may lead to more "dead codes"
             self.expire_codes_(x)
 
-        # 返回原始 dist（未加噪/未遮罩），与原版保持一致
+        # Return the original dist (without noise/masking), consistent with the original version
         return quantize, embed_ind, dist
 
 class VectorQuantize(nn.Module):

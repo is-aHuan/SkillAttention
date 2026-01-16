@@ -7,7 +7,7 @@ from torchvision import models
 
 def replace_bn_with_gn(module: nn.Module, num_groups_div: int = 16):
     """
-    递归把 module 里的 BatchNorm2d 替换成 GroupNorm。
+    Recursively replace BatchNorm2d in the module with GroupNorm.
     num_groups = num_features // num_groups_div
     """
     for name, child in list(module.named_children()):
@@ -27,7 +27,6 @@ class BaseEncoder(nn.Module):
 
     def __init__(self):
         super().__init__()
-
 
     def preprocess(self, observations):
         """
@@ -118,14 +117,14 @@ class ProprioMLPEncoder(nn.Module):
         layers = []
         prev_dim = input_dim
         
-        # 构建隐藏层
+        # Build hidden layers
         for h_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, h_dim))
-            # 使用 Mish 或 ReLU，Diffusion 中 Mish 也很常用，这里用 ReLU
+            # Use Mish or ReLU, Mish is also commonly used in Diffusion, here we use ReLU
             layers.append(nn.ReLU()) 
             prev_dim = h_dim
             
-        # 最终输出层 (无激活函数)
+        # Final output layer (no activation function)
         layers.append(nn.Linear(prev_dim, output_dim))
         
         self.net = nn.Sequential(*layers)
@@ -144,16 +143,16 @@ class ProprioMLPEncoder(nn.Module):
 
 class ResNetImageEncoder(nn.Module):
     """
-    单路 RGB 图像 encoder（无内部 resize）：
-      - 可选 random / center crop 到 crop_shape
-      - ImageNet norm（可选）
-      - ResNet18 backbone（去掉 fc，可选 BN→GN）
+    Single-path RGB image encoder (no internal resize):
+      - Optional random / center crop to crop_shape
+      - ImageNet norm (optional)
+      - ResNet18 backbone (remove fc, optional BN→GN)
 
-    输入:
-      x: [B, 3, H, W]，H,W 由数据集保证为 240x320 或其它固定大小
+    Input:
+      x: [B, 3, H, W], H,W guaranteed by dataset to be 240x320 or other fixed size
 
-    输出:
-      feats: [B, feat_dim]，resnet18 默认 feat_dim = 512
+    Output:
+      feats: [B, feat_dim], resnet18 default feat_dim = 512
     """
     def __init__(self,
                  crop_shape=(216, 288),
@@ -167,7 +166,7 @@ class ResNetImageEncoder(nn.Module):
         self.random_crop = random_crop
         self.imagenet_norm = imagenet_norm
 
-        # 1) 构造 resnet backbone
+        # 1) Construct resnet backbone
         if resnet_name == 'resnet18':
             resnet = models.resnet18(
                 weights=None if not pretrained else models.ResNet18_Weights.IMAGENET1K_V1
@@ -175,15 +174,15 @@ class ResNetImageEncoder(nn.Module):
         else:
             raise ValueError(f"Unsupported resnet backbone: {resnet_name}")
 
-        # 可选 BN -> GN
+        # Optional BN -> GN
         if use_group_norm:
             resnet = replace_bn_with_gn(resnet, num_groups_div=16)
 
-        # 去掉最后的 fc，保留到 avgpool
+        # Remove the last fc, keep until avgpool
         self.backbone = nn.Sequential(*list(resnet.children())[:-1])  # conv..layer4 + avgpool
         self.feat_dim = resnet.fc.in_features  # resnet18 = 512
 
-        # ImageNet 标准化参数
+        # ImageNet standardization parameters
         if imagenet_norm:
             self.register_buffer(
                 'img_mean',
@@ -199,7 +198,7 @@ class ResNetImageEncoder(nn.Module):
 
     def _crop(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x: [B,3,H,W]，裁剪成 [B,3,Hc,Wc]
+        x: [B,3,H,W], crop to [B,3,Hc,Wc]
         """
         if self.crop_shape is None:
             return x
@@ -213,7 +212,7 @@ class ResNetImageEncoder(nn.Module):
             top = random.randint(0, H - Hc)
             left = random.randint(0, W - Wc)
         else:
-            # eval / rollout 用中心裁剪，保证稳定
+            # eval / rollout use center crop for stability
             top = (H - Hc) // 2
             left = (W - Wc) // 2
 
@@ -223,7 +222,7 @@ class ResNetImageEncoder(nn.Module):
         """
         x: [B,3,H,W]
         """
-        # 1) crop（H,W 由数据集保证，比如 240x320）
+        # 1) crop (H,W guaranteed by dataset, e.g. 240x320)
         x = self._crop(x)
 
         # 2) ImageNet norm
@@ -231,22 +230,22 @@ class ResNetImageEncoder(nn.Module):
             x = (x - self.img_mean) / self.img_std
 
         # 3) ResNet18 backbone
-        feats = self.backbone(x)      # [B,512,1,1]（全局 ave pool 完了）
+        feats = self.backbone(x)      # [B,512,1,1]
         feats = feats.view(feats.size(0), -1)  # [B,512]
         return feats
 
 class SingleImageObsEncoder(nn.Module):
     """
-    单路图像版 ObsEncoder（对齐 MultiObsEncoder 风格）
+    Single-path image ObsEncoder (aligned with MultiObsEncoder style)
 
-    输入:
+    Input:
       image:   [B*T, 3, H, W]
-      proprio: [B*T, Dp]  (可选)
+      proprio: [B*T, Dp]  (optional)
 
-    输出:
+    Output:
       obs_embed:
-        - 无 proprio: [B*T, 512]
-        - 有 proprio: [B*T, 512 + Dp]
+        - Without proprio: [B*T, 512]
+        - With proprio: [B*T, 512 + Dp]
     """
     def __init__(self,
                  proprio_input_dim: int = 0,
@@ -258,7 +257,7 @@ class SingleImageObsEncoder(nn.Module):
                  pretrained: bool = False):
         super().__init__()
 
-        # -------- 图像 encoder --------
+        # -------- Image encoder --------
         self.image_encoder = ResNetImageEncoder(
             crop_shape=crop_shape,
             random_crop=random_crop,
@@ -268,7 +267,7 @@ class SingleImageObsEncoder(nn.Module):
             pretrained=pretrained
         )
 
-        # -------- proprio encoder（可选） --------
+        # -------- Proprio encoder (optional) --------
         if proprio_input_dim > 0:
             self.proprio_encoder = ProprioMLPEncoder(
                 input_dim=proprio_input_dim,
@@ -299,7 +298,7 @@ class SingleImageObsEncoder(nn.Module):
         image:   [B*T, 3, H, W]
         proprio: [B*T, Dp] or None
         """
-        # 图像特征
+        # Image features
         img_feat = self.image_encoder(image)  # [B*T, 512]
 
         if self.proprio_encoder is None:
@@ -313,16 +312,16 @@ class SingleImageObsEncoder(nn.Module):
 
 class MultiObsEncoder(nn.Module):
     """
-    ResNet18 版 MultiObsEncoder：
-      - head / wrist 各一路 ResNetImageEncoder
-      - proprio 直接 concat
+    ResNet18 version of MultiObsEncoder:
+      - head / wrist each have a ResNetImageEncoder
+      - proprio concatenated directly
 
-    输入:
+    Input:
       head_image:  [B*T, 3, H, W]
       wrist_image: [B*T, 3, H, W]
       proprio:     [B*T, Dp]
 
-    输出:
+    Output:
       obs_embed:   [B*T, 512 + 512 + Dp]
     """
     def __init__(self,
@@ -337,7 +336,7 @@ class MultiObsEncoder(nn.Module):
                  **kargs):
         super().__init__()
 
-        # head 视角 encoder
+        # Head perspective encoder
         self.head_encoder = ResNetImageEncoder(
             crop_shape=crop_shape,
             random_crop=random_crop,
@@ -347,7 +346,7 @@ class MultiObsEncoder(nn.Module):
             pretrained=pretrained
         )
 
-        # wrist 视角 encoder
+        # Wrist perspective encoder
         if share_rgb_model:
             self.wrist_encoder = self.head_encoder
         else:
@@ -363,7 +362,7 @@ class MultiObsEncoder(nn.Module):
         self.proprio_encoder = ProprioMLPEncoder(
             input_dim=proprio_input_dim,
             output_dim=proprio_input_dim,
-            hidden_dims=[128, 64] # 两层隐藏层，增加非线性表达能力
+            hidden_dims=[128, 64] 
         )
 
     @property
@@ -386,17 +385,13 @@ class MultiObsEncoder(nn.Module):
         """
         assert head_image.shape == wrist_image.shape
 
-        # 单路编码: [B*T, 512], [B*T, 512]
+        # Single-path encoding: [B*T, 512], [B*T, 512]
         head_feat  = self.head_encoder(head_image)
         wrist_feat = self.wrist_encoder(wrist_image)
 
-        # MLP 提供了一个可学习的投影，比直接 concat 更好
         proprio_feat = self.proprio_encoder(proprio)
 
-        # proprio: [B*T,Dp]，前面 Dataset 已经 normalize 过
+        # proprio: [B*T,Dp]
         obs_embed = torch.cat([head_feat, wrist_feat, proprio_feat], dim=-1)
-        # 形状: [B*T, 512+512+Dp]
+        # Shape: [B*T, 512+512+Dp]
         return obs_embed
-
-
-    

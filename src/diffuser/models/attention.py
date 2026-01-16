@@ -21,7 +21,7 @@ class CrossAttention(nn.Module):
         """
         x: (B, T, Cq)
         context: (B, N, Cc) or None (None -> self-attn)
-        context_mask: (B, N) bool, True=keep, False=pad  (可选)
+        context_mask: (B, N) bool, True=keep, False=pad  (optional)
         """
         b, t, _ = x.shape
         context = x if context is None else context
@@ -35,13 +35,13 @@ class CrossAttention(nn.Module):
         k = k.view(b, context.shape[1], self.heads, self.dim_head).transpose(1, 2)
         v = v.view(b, context.shape[1], self.heads, self.dim_head).transpose(1, 2)
 
-        # PyTorch 2.x: scaled_dot_product_attention 更快更稳
+        # PyTorch 2.x: scaled_dot_product_attention
         attn_mask = None
         if context_mask is not None:
-            # 把 0/1 的有效 mask 转成 “padding = True”的 mask
-            # True = 需要屏蔽的位置 = pad token
+            # Convert 0/1 valid mask to "padding = True" mask
+            # True = positions to be masked = pad token
             attn_mask = (context_mask == 0)          # [B, L_k], bool
-            attn_mask = attn_mask[:, None, None, :]   # [B, 1, 1, L_k] -> broadcast 到 (B, h, L_q, L_k)
+            attn_mask = attn_mask[:, None, None, :]   # [B, 1, 1, L_k] -> broadcast to (B, h, L_q, L_k)
 
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)  # (B, heads, T, dim_head)
         out = out.transpose(1, 2).contiguous().view(b, t, self.heads * self.dim_head)
@@ -78,8 +78,8 @@ class BasicTransformerBlock(nn.Module):
 
 class SpatialTransformer1D(nn.Module):
     """
-    LDM SpatialTransformer 的 1D 版本：
-    (B,C,T) -> (B,T,inner) 进 transformer -> 回到 (B,C,T)，残差连接
+    LDM SpatialTransformer 1D version:
+    (B,C,T) -> (B,T,inner) into transformer -> back to (B,C,T), residual connection
     """
     def __init__(self, channels, heads, dim_head, depth=1, context_dim=None, n_groups=8, dropout=0.0):
         super().__init__()
@@ -97,8 +97,8 @@ class SpatialTransformer1D(nn.Module):
         # x: (B,C,T)
         x_in = x
         x = self.norm(x)
-        x = self.proj_in(x)                      # (B,inner,T)
-        x = einops.rearrange(x, 'b c t -> b t c')# (B,T,inner)
+        x = self.proj_in(x)                         # (B,inner,T)
+        x = einops.rearrange(x, 'b c t -> b t c')   # (B,T,inner)
         for blk in self.transformer:
             x = blk(x, context=context, context_mask=context_mask)
         x = einops.rearrange(x, 'b t c -> b c t')

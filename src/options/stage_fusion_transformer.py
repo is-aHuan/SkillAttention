@@ -8,15 +8,15 @@ import torch.nn.functional as F
 
 
 # =========================
-# 基础组件：Attention / MLP / Block
+# Basic Components: Attention / MLP / Block
 # =========================
 
 class Attention(nn.Module):
     """
-    简化版 Multi-Head Attention：
-      - 支持 self-attn 和 cross-attn（通过 is_cross_attention 控制）
-      - 只做 padding mask，不做 causal mask
-      - 输入 / 输出形状：hidden_states: [B, L, H]
+    Simplified Multi-Head Attention:
+      - Supports self-attn and cross-attn (controlled by is_cross_attention)
+      - Only does padding mask, no causal mask
+      - Input / output shape: hidden_states: [B, L, H]
     """
 
     def __init__(
@@ -35,11 +35,11 @@ class Attention(nn.Module):
         self.is_cross_attention = is_cross_attention
 
         if is_cross_attention:
-            # Q 来自当前层 hidden_states，K/V 来自 encoder_hidden_states
+            # Q comes from the current layer hidden_states, K/V come from encoder_hidden_states
             self.q_proj = nn.Linear(dim, dim)
             self.kv_proj = nn.Linear(dim, 2 * dim)
         else:
-            # Q/K/V 都来自同一个 hidden_states
+            # Q/K/V all come from the same hidden_states
             self.qkv_proj = nn.Linear(dim, 3 * dim)
 
         self.out_proj = nn.Linear(dim, dim)
@@ -59,9 +59,9 @@ class Attention(nn.Module):
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        返回: (context, attn_weights)
+        Returns: (context, attn_weights)
           context: [B, L_q, H]
-          attn_weights: [B, n_head, L_q, L_k] 或 None
+          attn_weights: [B, n_head, L_q, L_k] or None
         """
         B, L_q, H = hidden_states.shape
 
@@ -77,9 +77,9 @@ class Attention(nn.Module):
             k = self._shape(k, B, L_k)                            # [B, h, L_k, d]
             v = self._shape(v, B, L_k)                            # [B, h, L_k, d]
 
-            attn_mask = encoder_attention_mask                    # [B,1,1,L_k] 或 None
+            attn_mask = encoder_attention_mask                    # [B,1,1,L_k] or None
         else:
-            # Self-Attention: Q/K/V 全都来自 hidden_states
+            # Self-Attention: Q/K/V all come from hidden_states
             L_k = L_q
             qkv = self.qkv_proj(hidden_states)                    # [B, L_q, 3H]
             q, k, v = qkv.split(H, dim=-1)
@@ -88,14 +88,14 @@ class Attention(nn.Module):
             k = self._shape(k, B, L_k)
             v = self._shape(v, B, L_k)
 
-            attn_mask = attention_mask                            # [B,1,1,L_k] 或 None
+            attn_mask = attention_mask                            # [B,1,1,L_k] or None
 
         # [B, h, L_q, d] x [B, h, d, L_k] -> [B, h, L_q, L_k]
         attn_scores = torch.matmul(q, k.transpose(-2, -1))
         attn_scores = attn_scores / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
-            # attn_mask: [B, 1, 1, L_k] 广播到 [B, h, L_q, L_k]
+            # attn_mask: [B, 1, 1, L_k] broadcast to [B, h, L_q, L_k]
             attn_scores = attn_scores + attn_mask
 
         attn_weights = F.softmax(attn_scores, dim=-1)   # [B, h, L_q, L_k]
@@ -197,10 +197,10 @@ class Block(nn.Module):
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        返回:
+        Returns:
           hidden_states: [B, L, H]
-          self_attn_weights: [B, n_head, L, L] 或 None
-          cross_attn_weights: [B, n_head, L, L_code] 或 None
+          self_attn_weights: [B, n_head, L, L] or None
+          cross_attn_weights: [B, n_head, L, L_code] or None
         """
         # Self-Attn
         residual = hidden_states
@@ -245,7 +245,7 @@ class SFTConfig:
     n_embd: int = 768
     n_head: int = 24
     n_inner: Optional[int] = None
-    n_positions: int = 512           # 目前没用到，可以保留
+    n_positions: int = 512          
     attn_pdrop: float = 0.1
     resid_pdrop: float = 0.1
     layer_norm_epsilon: float = 1e-5
@@ -255,15 +255,15 @@ class SFTConfig:
 
 class StageFusionTransformer(nn.Module):
     """
-    三阶段融合结构：
-      - Block0: 只对语言 token 做 self-attention
-      - 注入 state_inputs（图像 / 状态序列）
-      - Block1: 对 [lang + state] 做 self-attention（全局）
-      - Block2: 对 [lang + state] 做 self-attn + cross-attn(codebook)
-    注意：
-      - 不在这里再加位置编码：
-        * lang_inputs: 通常是 BERT 输出，已经带 pos
-        * state_inputs: 上游已经加了 time_embeddings
+    Three-stage fusion architecture:
+      - Block0: self-attention over language tokens only
+      - Inject state_inputs (images / state sequences)
+      - Block1: self-attention over [lang + state] (global)
+      - Block2: self-attention over [lang + state] plus cross-attention (codebook)
+    Notes:
+      - Do not add positional embeddings here:
+        * lang_inputs: typically BERT outputs, already include positional information
+        * state_inputs: upstream has already added time_embeddings
     """
 
     def __init__(self, config: SFTConfig):
@@ -271,7 +271,6 @@ class StageFusionTransformer(nn.Module):
         self.config = config
         H = config.n_embd
 
-        # 三个 block：前两个不带 cross-attn，最后一个带 cross-attn
         self.block0 = Block(
             n_embd=H,
             n_head=config.n_head,
@@ -310,7 +309,7 @@ class StageFusionTransformer(nn.Module):
     def _build_4d_mask(mask_2d: torch.Tensor) -> torch.Tensor:
         """
         mask_2d: [B, L], 1=keep, 0=pad
-        返回: [B, 1, 1, L]，pad 的位置为 -1e4
+        Returns: [B, 1, 1, L], pad positions are set to -1e4
         """
         mask = mask_2d[:, None, None, :]         # [B,1,1,L]
         mask = (1.0 - mask.float()) * -1e4       # 1->0, 0->-1e4
@@ -318,8 +317,8 @@ class StageFusionTransformer(nn.Module):
 
     def forward(
         self,
-        lang_inputs: torch.Tensor,                # [B, L_text, H]  (BERT 输出)
-        state_inputs: Optional[torch.Tensor] = None,  # [B, L_state, H] or None （已加好 time_embeddings）
+        lang_inputs: torch.Tensor,                # [B, L_text, H]  (BERT outputs)
+        state_inputs: Optional[torch.Tensor] = None,  # [B, L_state, H] or None (already added time_embeddings)
         lang_mask: Optional[torch.Tensor] = None,     # [B, L_text], 1=keep,0=pad
         state_mask: Optional[torch.Tensor] = None,    # [B, L_state],1=keep,0=pad
         encoder_hidden_states: Optional[torch.Tensor] = None,   # codebook [Benc, L_code, H]
@@ -328,7 +327,7 @@ class StageFusionTransformer(nn.Module):
         output_attentions: bool = True,
     ) -> Dict[str, Any]:
         """
-        返回：
+        Returns:
           {
             "last_hidden_state": [B, L_total, H],
             "hidden_states": tuple([...]) or None,
@@ -345,7 +344,7 @@ class StageFusionTransformer(nn.Module):
         else:
             L_state = 0
 
-        # 语言部分 mask
+        # language mask
         if lang_mask is None:
             lang_mask = torch.ones(B, L_text, device=device)
 
@@ -355,8 +354,8 @@ class StageFusionTransformer(nn.Module):
         all_self_attns = () if output_attentions else None
         all_cross_attns = () if (output_attentions and self.config.add_cross_attention) else None
 
-        # ===== Block0：只看语言 =====
-        hidden_states = self.drop(lang_inputs)            # 不再加 pos
+        # ===== Block0: language only =====
+        hidden_states = self.drop(lang_inputs)            # no pos added
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -370,7 +369,7 @@ class StageFusionTransformer(nn.Module):
         if output_attentions:
             all_self_attns += (self_attn0,)
 
-        # ===== 注入 state_inputs =====
+        # ===== state_inputs =====
         if state_inputs is not None:
             if state_mask is None:
                 state_mask = torch.ones(B, L_state, device=device)
@@ -383,7 +382,7 @@ class StageFusionTransformer(nn.Module):
 
         L_total = hidden_states.shape[1]
 
-        # ===== Block1：对 [lang + state] 做 self-attn =====
+        # ===== Block1: self-attention over [lang + state] =====
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -397,7 +396,7 @@ class StageFusionTransformer(nn.Module):
         if output_attentions:
             all_self_attns += (self_attn1,)
 
-        # ===== Block2：self-attn + cross-attn(codebook) =====
+        # ===== Block2: self-attn + cross-attn(codebook) =====
         if encoder_hidden_states is not None:
             Benc, L_code, Henc = encoder_hidden_states.shape
             assert Henc == H, "codebook hidden size must match n_embd"

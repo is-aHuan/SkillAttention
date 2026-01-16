@@ -25,41 +25,39 @@ class SkillConditionDiffusion(nn.Module):
         else:
             predict_type = "sample"
 
-        # 1. 初始化 Scheduler
-        # DDPMScheduler 会自动处理 beta, alpha, posterior 等计算
+        # 1. Initialize Scheduler
         self.scheduler = DDPMScheduler(
             num_train_timesteps=n_timesteps,
             beta_schedule="squaredcos_cap_v2",
-            clip_sample=clip_denoised,      # 对应原代码的 clip_denoised
-            prediction_type=predict_type,    # 对应原代码的 predict_epsilon 判断
+            clip_sample=clip_denoised,      
+            prediction_type=predict_type,    
         )
 
     # =================================================================
-    # 第一部分：训练 Loss 计算
+    # First part: Loss
     # =================================================================
     def compute_loss(self, x_start, global_cond=None, local_cond=None, loss_mask=None, **kwargs):
         """
-        计算扩散模型的训练 Loss
+        Compute training loss for the diffusion model
         """
         device = x_start.device
         B = x_start.shape[0]
 
-        # 1. 随机采样时间步 t
+        # 1. Randomly sample time steps t
         t = torch.randint(0, self.n_timesteps, (B,), device=device).long()
 
-        # 2. 生成高斯噪声
+        # 2. Generate Gaussian noise
         noise = torch.randn_like(x_start)
 
-        # 3. 前向加噪 (Forward Process)
+        # 3. Forward process (add noise)
         # scheduler.add_noise(original_samples, noise, timesteps)
         x_noisy = self.scheduler.add_noise(x_start, noise, t)
 
-        # 4. 模型预测
-        # 注意：model 需要接受 t 作为输入
+        # 4. Model prediction
         pred = self.model(x_noisy, t, global_cond=global_cond, local_cond=local_cond, **kwargs)
 
-        # 5. 计算 Loss
-        # 根据 prediction_type 决定 target 是噪声还是原始数据
+        # 5. Compute Loss
+        # Determine target based on prediction_type
         if self.scheduler.config.prediction_type == "epsilon":
             target = noise
         else: # prediction_type == "sample"
@@ -73,22 +71,22 @@ class SkillConditionDiffusion(nn.Module):
         return loss.mean()
 
     # =================================================================
-    # 第二部分：推理 Sampling
+    # Second part: Sampling
     # =================================================================
     @torch.no_grad()
     def sample(self, global_cond=None, local_cond=None, horizon=None, generator=None, **kwargs):
         """
-        执行反向扩散过程生成样本
+        Perform the reverse diffusion process to generate samples
         """
         if global_cond is not None:
             device = global_cond.device
         elif local_cond is not None:
             device = local_cond.device
         else:
-            # 从模型参数获取设备（模型肯定在 GPU/CPU 上）
-            device = next(self.model.parameters()).device  # 关键修复！
+            # Get device from model parameters (model should be on GPU/CPU)
+            device = next(self.model.parameters()).device  # Crucial fix!
         
-        # 确定 Batch Size
+        # Determine Batch Size
         if global_cond is not None:
             B = global_cond.shape[0]
         elif local_cond is not None:
@@ -99,21 +97,21 @@ class SkillConditionDiffusion(nn.Module):
         horizon = horizon or self.horizon
         shape = (B, horizon, self.action_dim)
 
-        # 1. 初始化高斯噪声 x_T
+        # 1. Initialize Gaussian noise x_T
         latents = torch.randn(shape, device=device, generator=generator)
 
-        # 2. 设置推理时间步 (通常推理时步数可以少于训练步数，这里保持一致)
+        # 2. Set inference timesteps (usually fewer than training steps, but kept consistent here)
         self.scheduler.set_timesteps(self.n_timesteps)
 
-        # 3. 反向去噪循环
+        # 3. Reverse denoising loop
         for t in self.scheduler.timesteps:
-            # 3.1 模型预测
+            # 3.1 Model prediction
             t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
             
-            # 预测噪声 (epsilon) 或 样本 (sample)
+            # Predict noise (epsilon) or sample based on scheduler config
             model_output = self.model(latents, t_tensor, global_cond=global_cond, local_cond=local_cond, **kwargs)
 
-            # 3.2 Scheduler Step (核心简化)
+            # 3.2 Scheduler Step 
             latents = self.scheduler.step(model_output, t, latents).prev_sample
 
         return latents

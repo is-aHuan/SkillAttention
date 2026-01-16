@@ -222,7 +222,7 @@ class ExpertDataset(Dataset):
         else:
             self.aug = None
 
-        # Memmap 路径（新增 scale/offset 保存路径）
+        # Memmap file paths
         os.makedirs(self.memmap_dir, exist_ok=True)
         self.meta_path = os.path.join(self.memmap_dir, "meta.json")
         self.lengths_path = os.path.join(self.memmap_dir, "lengths.npy")
@@ -238,17 +238,17 @@ class ExpertDataset(Dataset):
         self.action_offset_path = os.path.join(self.memmap_dir, "action_offset.npy")
 
         self.proprio_path = os.path.join(self.memmap_dir, "proprio.mmap")
-        self.images_path  = os.path.join(self.memmap_dir, "images.mmap")   # 修正 .mmap
+        self.images_path  = os.path.join(self.memmap_dir, "images.mmap")   
         self.actions_path = os.path.join(self.memmap_dir, "actions.mmap")
         self.rewards_path = os.path.join(self.memmap_dir, "rewards.mmap")
         self.dones_path   = os.path.join(self.memmap_dir, "dones.mmap")
 
-        # Rank0 构建 memmap（新增 chunk 处理）
+        # Rank0 build memmap (added chunk processing)
         if writer and (force_rebuild or not self._memmap_exists()):
             all_traj = self._load_and_subsample(
                 expert_location, num_trajectories, subsample_frequency, seed, **kwargs
             )
-            # 新增：chunk轨迹切分
+            # Added: chunk trajectory splitting
             if chunk_horizon is not None:
                 all_traj = self._chunk_trajectories(all_traj, chunk_horizon)
             self._infer_normalize_dim(expert_location, all_traj, **kwargs)
@@ -258,7 +258,7 @@ class ExpertDataset(Dataset):
 
         self._attach_memmaps()
 
-        # 预计算 not-full-traj 的 (traj_idx, offset) 索引
+        # Precompute (traj_idx, offset) indices for not-full-traj
         if not self.full_traj:
             self.get_idx = []
             for t_idx, L in enumerate(self.trajectories["lengths"]):
@@ -268,10 +268,10 @@ class ExpertDataset(Dataset):
         self.max_length = int(np.max(self.trajectories["lengths"]))
         self.length = int(np.sum(self.trajectories["lengths"])) if not self.full_traj else len(self.trajectories["lengths"])
 
-    # ---------- 新增：Chunk轨迹切分 ----------
+    # ---------- Added: Chunk trajectory splitting ----------
     def _chunk_trajectories(self, trajs: Dict[str, List[np.ndarray]], horizon: int) -> Dict[str, List[np.ndarray]]:
         """
-        把每条轨迹按horizon切分为多个子轨迹，最后一段长度不足horizon也保留
+        Split each trajectory into multiple sub-trajectories of length horizon, keeping the last segment even if it's shorter than horizon.
         """
         new_traj = {
             "proprio": [], "images": [], "actions": [], "rewards": [],
@@ -301,7 +301,7 @@ class ExpertDataset(Dataset):
 
         return new_traj
 
-    # ---------- 替换：计算Scale/Offset（替代原mean/std） ----------
+    # ---------- Replaced: Compute Scale/Offset ----------
     def _compute_stats(self, all_traj: Dict[str, Any], range_eps: float = 1e-4):
         """
         compute scale/offset so that x_norm = x * scale + offset maps to approx [-1, 1]
@@ -357,9 +357,9 @@ class ExpertDataset(Dataset):
         np.save(self.action_scale_path, action_scale)
         np.save(self.action_offset_path, action_offset)
 
-    # ---------- 准备/加载 数据 ----------
+    # ---------- Prepare/Load Data ----------
     def _load_and_subsample(self, expert_location: str, num_traj: int, ss: int, seed: int, **kwargs) -> Dict[str, Any]:
-        """读盘并做降采样，返回 dict(list/np.array)。"""
+        """Load from disk and subsample, returning dict(list/np.array)."""
         all_traj = load_trajectories(expert_location, num_traj, seed, **kwargs)
 
         # subsample
@@ -396,7 +396,7 @@ class ExpertDataset(Dataset):
         return all(os.path.exists(p) for p in paths)
 
     def _build_memmaps(self, all_traj: Dict[str, Any]):
-        """rank: 把内存中的列表数据写到磁盘 memmap 并保存元信息与统计量。"""
+        """rank: Write in-memory list data to disk memmap and save metadata and statistics."""
         lengths = np.array(all_traj["lengths"], dtype=np.int64)
         total_T = int(np.sum(lengths))
 
@@ -436,7 +436,7 @@ class ExpertDataset(Dataset):
             json.dump(meta, f)
 
     def _attach_memmaps(self):
-        """所有 rank：附着到已存在的 memmap 文件，并加载必要元信息。"""
+        """All ranks: attach to existing memmap files and load necessary metadata."""
         with open(self.meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
         self.meta = meta
@@ -484,18 +484,18 @@ class ExpertDataset(Dataset):
 
     def _np_slice_to_torch(self, x):
         """
-        将 numpy / memmap 切片零拷贝转 torch.Tensor，并 clone() 以避免原地归一化写回底层。
-        如果本身已经是 torch.Tensor 则直接返回 clone()。
+        Convert a zero-copy numpy/memmap slice to torch.Tensor, and clone() to avoid in-place normalization writing back to the underlying data.
+        If it is already a torch.Tensor, return a clone() directly.
         """
         if isinstance(x, torch.Tensor):
             return x.clone().float()
         xt = torch.from_numpy(np.array(x, copy=True)).float()
         return xt.clone()
 
-    # ---------- 公共工具 ----------
+    # ---------- Tools ----------
     @staticmethod
     def _pad_torch(x: torch.Tensor, max_len: int) -> torch.Tensor:
-        """在 dim=0 方向补零到 max_len。"""
+        """Pad zeros to max_len along dim=0."""
         if x.size(0) == max_len:
             return x
         out_shape = (max_len,) + tuple(x.shape[1:])
@@ -503,7 +503,7 @@ class ExpertDataset(Dataset):
         out[:x.size(0)] = x
         return out
 
-    # ---------- Dataset 接口 ----------
+    # ---------- Dataset interface ----------
     def __len__(self) -> int:
         return self.length
 
@@ -518,7 +518,7 @@ class ExpertDataset(Dataset):
 
             if self.normalize_states:
                 d = self.normalize_state_dim
-                if isinstance(d, (tuple, list)):  # CHW 归一化
+                if isinstance(d, (tuple, list)):  # CHW Normalization
                     state = (state - self.state_mean) / self.state_std
                     next_state = (next_state - self.state_mean) / self.state_std
                 else:
@@ -573,7 +573,7 @@ if __name__ == '__main__':
     exper_path = "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl"
     memmap_dir = "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/memmap_cache_lorel"
 
-    # 第一次跑用 writer=True 建 memmap
+    # First run with writer=True to build memmap
     ds = ExpertDataset(
         expert_location=exper_path,
         memmap_dir=memmap_dir,

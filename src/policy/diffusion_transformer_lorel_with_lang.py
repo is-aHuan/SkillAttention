@@ -45,7 +45,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         obs_cfg = dict(policy_args.obs_encoder)
         self.obs_encoder = SingleImageObsEncoder(**obs_cfg)
 
-        # 2) 计算 obs_feat_dim
+        # 2) compute obs_feat_dim
         self.obs_feat_dim = self.obs_encoder.feat_dim
         
         # --- Option Selector ---
@@ -53,19 +53,17 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         opt_cfg['state_dim'] = self.obs_encoder.image_feat_dim
         self.option_selector = OptionSelector(**opt_cfg)
 
-        # --- 3) 构建 Diffusion Model (集成在内部) ---
+        # --- 3) build Diffusion Model ---
         self.diffusion_model = self._build_diffusion_model(diff_args)
 
-        # --- 4) 配置 EMA (集成在内部) ---
+        # --- 4) setup EMA ---
         self.ema_decay = diff_args.ema_decay
         self.update_ema_every = diff_args.update_ema_every
         self.step_start_ema = 5
         self.step = 0
 
         self.ema = EMA(self.ema_decay)
-        # 深拷贝构建 EMA 模型
         self.ema_model = copy.deepcopy(self.diffusion_model)
-        # ✅ 关键：EMA 模型不需要梯度，防止 DDP 把它当做需要训练的参数
         self.ema_model.requires_grad_(False)
 
         # --- Stats ---
@@ -84,7 +82,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
                 ):
         device = self.device
 
-        # ---------------- 0. 数据上 GPU ---------------- #
+        # ---------------- 0. move data to GPU ---------------- #
         B, K, Da = actions.shape
         image   = obs['images'].to(device)      # [B,K,3,H,W]
         proprio = obs['proprio'].to(device)    # [B,K,Dp]
@@ -93,7 +91,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         timesteps = timesteps.to(device)
         attention_mask = attention_mask.to(device)
 
-        # ---------------- 1. 语言编码 ---------------- #
+        # ---------------- 1. language encoding ---------------- #
         with torch.no_grad():
             lm_input = self.tokenizer(
                 text=list(langs),
@@ -112,13 +110,13 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         word_embeddings = lm_embeddings[:, 1:, :]
         lang_mask = lm_input['attention_mask'][:, 1:]
 
-        # ---------------- 2. 图像 + proprio 编码 ---------------- #
+        # ---------------- 2. image + proprio encoding ---------------- #
         B, K, C, H, W = image.shape
         image_flat = image.reshape(B*K, 3, H, W)
         proprio_flat = proprio.reshape(B*K, -1)
 
-        # 单路 encoder：输出 [B*K, D]，再 reshape 回 [B,K,D]
-        obs_embeddings = self.obs_encoder(image_flat, proprio_flat)  # ✅ 单路
+        # Single-path encoder: outputs [B*K, D], then reshape back to [B,K,D]
+        obs_embeddings = self.obs_encoder(image_flat, proprio_flat)  
         obs_embeddings = obs_embeddings.reshape(B, K, -1)
 
         T_obs = self.n_obs_steps
@@ -133,10 +131,8 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
                 timesteps, state_mask, lang_mask
             )
 
-        # ---------------- 4. 构造 Cond ---------------- #
-        # 注意：Transformer 版本对 input 的处理可能略有不同，这里遵循通用逻辑
+        # ---------------- 4. construct Cond ---------------- #
         if self.obs_as_global_cond:
-            # (模式 A) obs 作为 global_cond（flatten 时间），option 作为 local_cond（保留时间维）
             nobs_features = obs_embeddings[:, :T_obs].reshape(B, T_obs, -1)      # [B, T_obs, D_cond]
             cond = nobs_features
             if self.pred_action_steps_only:
@@ -158,12 +154,10 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
             nobs_features = obs_embeddings.reshape(B, K, -1)
             actions = torch.cat([actions, nobs_features], dim=-1).detach()
 
-        # 扩散 loss mask：padding 置 0
+        # diffusion loss mask: set padding to 0
         loss_mask = attention_mask.bool().unsqueeze(-1).expand(-1, -1, Da)   # [B, T, Da]
 
-        # ---------------- 5. 扩散训练 (集成逻辑) ---------------- #
-        # ✅ 直接调用内部 diffusion model 计算 Loss
-        # SkillConditionDiffusion.loss(x_start, global_cond=None, local_cond=None, loss_mask=None)
+        # ---------------- 5. diffusion training (integrated logic) ---------------- #
         inner_diff_loss = self.diffusion_model.compute_loss(
             actions, 
             global_cond=cond, 
@@ -172,9 +166,9 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
             lang_mask=lang_mask
         )
 
-        # ---------------- 6. 验证/监控 (使用 EMA Model) ---------------- #
+        # ---------------- 6. validation/monitoring (use EMA Model) ---------------- #
         with torch.no_grad():
-            # ✅ 使用内部的 EMA model 采样
+            # Sample using internal EMA model
             action_pred = self.ema_model.condition_sample(
                 global_cond=cond,
                 local_cond=None,
@@ -183,7 +177,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
                 lang_mask=lang_mask          
             )
 
-            # 逐元素 MSE
+            # element-wise MSE
             val_loss = F.mse_loss(actions, action_pred, reduction='none')
             val_loss = val_loss * loss_mask.to(val_loss.dtype)
             denom = loss_mask.sum().clamp_min(1)
@@ -192,7 +186,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         return {
             'action_pred_loss': action_pred_loss,   
             'commitment_loss': commitment_loss,
-            'inner_diff_loss': inner_diff_loss, # 返回这个 tensor 用于反向传播
+            'inner_diff_loss': inner_diff_loss, # return this tensor for backprop
             'entropy': entropy
         }
 
@@ -206,12 +200,12 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         device = self.device
         ema_diffusion_model = self.ema_model
 
-        # ---------------- 0. 拆出 obs ---------------- #
+        # ---------------- 0. unpack obs ---------------- #
         image   = obs['image'].to(device)      # [B,K,3,H,W]
         proprio = obs['proprio'].to(device)    # [B,K,Dp]
 
         B, K = proprio.shape[0], proprio.shape[1]
-        assert B == 1, "get_action 目前只实现 batch=1"
+        assert B == 1, "get_action currently only supports batch=1"
 
         # In Simulation Environment, obs already normalized
         if attention_mask is None:
@@ -254,7 +248,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
             timesteps, state_mask, lang_mask
         )
         
-        # 4) Cond
+        # 4) construct condition
         horizon = self.horizon
         if self.obs_as_global_cond:
             cond = obs_embeddings[:, :T_obs].reshape(B, T_obs, -1)
@@ -287,12 +281,12 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
         return actions, option_idx, soft_option_idx
 
     def _build_diffusion_model(self, diff_args):
-        """直接构建 TransformerForDiffusion 和 SkillConditionDiffusion"""
+        """Directly build TransformerForDiffusion and SkillConditionDiffusion"""
         action_dim   = self.action_dim
         n_obs_steps  = self.n_obs_steps
 
-        # === 1) 决定各个 dim ===
-        # 计算观测特征总维度
+        # === 1) decide dims ===
+        # compute total dimension of observation features
         obs_feature_dim = self.obs_encoder.feat_dim
         if self.obs_as_global_cond:
             input_dim = action_dim
@@ -318,13 +312,13 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
             max_lang_tokens=diff_args.max_lang_tokens,
             n_layer=diff_args.n_layer,
             n_head=diff_args.n_head,
-            n_emb=diff_args.n_emb, # 假设 args 里有这个
+            n_emb=diff_args.n_emb, 
             p_drop_emb=diff_args.p_drop_emb,
             p_drop_attn=diff_args.p_drop_attn,
             causal_attn=diff_args.causal_attn,
             time_as_cond=diff_args.time_as_cond,
-            obs_as_cond=diff_args.obs_as_cond, # 修正 typo: bs_as_cond -> obs_as_cond
-            n_cond_layers=diff_args.n_cond_layers # 修正 typo: _cond_layers -> n_cond_layers
+            obs_as_cond=diff_args.obs_as_cond, 
+            n_cond_layers=diff_args.n_cond_layers 
         )
 
         # === 3) Scheduler / Wrapper ===
@@ -340,7 +334,7 @@ class SkillAttentionTransformerLorelLangModel(nn.Module):
 
     # ----------------------- EMA Helper Functions ----------------------- #
     def update_ema(self):
-        """外部 Trainer 在每次 optimizer.step() 后调用此方法"""
+        """Called by external Trainer after every optimizer.step()"""
         self.step += 1
         if self.step % self.update_ema_every == 0:
             self._step_ema()

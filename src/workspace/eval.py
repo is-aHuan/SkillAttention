@@ -19,15 +19,15 @@ logger = logging.getLogger("eval_ckpt")
 
 def _get_eval_config(env_id, lorel_task):
         """
-        根据环境ID返回：
-        1. Wrapper类
+        Return based on environment ID:
+        1. Wrapper class
         2. max_ep_len
-        3. 任务列表 (instructions)
-        4. 是否需要按任务统计 (instr_wise)
+        3. list of tasks (instructions)
+        4. whether to aggregate statistics per task (instr_wise)
         """
         # dataset = self.train_loader.dataset
         
-        # --- Lorl (多任务) ---
+        # --- Lorl multi-task ---
         if 'Lorl' in env_id:
             if lorel_task == "compose":
                 return (
@@ -67,7 +67,7 @@ def _get_eval_config(env_id, lorel_task):
             else:
                 raise ValueError(f"Unknown lorel_task: {lorel_task}")
         
-        # # --- BabyAI (单任务) ---
+        # # --- BabyAI ---
         # elif 'BabyAI' in env_id:
         #     return (
         #         lambda e, d, task: BabyAIWrapper(e, d),
@@ -76,7 +76,7 @@ def _get_eval_config(env_id, lorel_task):
         #         False
         #     )
             
-        # # --- Hopper / Base (单任务) ---
+        # # --- Hopper / Base ---
         # else: # Default / Hopper
         #     return (
         #         lambda e, d, task: BaseWrapper(e, d),
@@ -86,7 +86,7 @@ def _get_eval_config(env_id, lorel_task):
         #     )
 
 def _save_render_output(render_path, task_name, tag, images):
-    """统一保存视频和日志"""
+    """Unified saving of videos and logs"""
     task_suffix = f"_{task_name}" if task_name else ""
     video_path = f"{render_path}/rollout{task_suffix}_{tag}.mp4"
 
@@ -98,7 +98,7 @@ def init_wandb_resume_from_exp_dir(cfg: DictConfig, exp_dir: str, exp_name: str)
     wandb_dir = os.path.join(exp_dir, "wandb")
     run_id_file = os.path.join(wandb_dir, "run_id.txt")
     if not os.path.exists(run_id_file):
-        raise FileNotFoundError(f"Cannot find {run_id_file} (用于 resume 同一个 wandb run)")
+        raise FileNotFoundError(f"Cannot find {run_id_file} (used to resume the same wandb run)")
 
     with open(run_id_file, "r") as f:
         run_id = f.read().strip()
@@ -155,7 +155,7 @@ def eval_episode(
     success = 0
     t = 0
 
-    # ================= 初始化 obs buffer ================= #
+    # ================= init obs buffer ================= #
     obs_buffer = {
         "image":   [obs["image"]] * n_obs_steps,     # list of [3,H,W]
         "proprio": [obs["proprio"]] * n_obs_steps,   # list of [Dp]
@@ -164,7 +164,7 @@ def eval_episode(
 
     # ================= rollout ================= #
     while t < max_ep_len:
-        # --------- 1) 构造 model 输入 --------- #
+        # --------- 1) model input --------- #
         image_seq = torch.stack([torch.from_numpy(img) for img in obs_buffer["image"]], dim=0) \
                         .unsqueeze(0).to(device)      # [1,T,3,H,W]
 
@@ -176,7 +176,7 @@ def eval_episode(
             device=device
         ).clamp(min=0).view(1, -1)
 
-        # --------- 2) policy 推理 --------- #
+        # --------- 2) policy inference --------- #
         actions, option_index, soft_option_scores = model.get_action(
             langs=[obs_buffer["lang"]],
             obs={
@@ -192,7 +192,7 @@ def eval_episode(
         soft_options_list.append(soft_option_scores.squeeze(0).cpu())
         max_soft_options_list.extend(soft_option_scores.squeeze(0).argmax(dim=1).cpu().tolist())
 
-        # --------- 3) 执行 action block --------- #
+        # --------- 3) execute action block --------- #
         new_images = []
         new_proprios = []
 
@@ -215,7 +215,7 @@ def eval_episode(
                 success = info.get("success", 0)
                 break
 
-        # --------- 4) 更新 obs buffer（整体替换） --------- #
+        # --------- 4) update obs buffer --------- #
         if len(new_images) > 0:
             obs_buffer = {
                 "image": new_images,
@@ -244,7 +244,7 @@ def eval_episode(
 
 def _task_id(task):
     if isinstance(task, dict):
-        # 用于 saved_gif / 文件名 / debug
+        # for saved_gif / filename / debug
         return f'{task["orig_instr"]}__{task["rephrasal_type"]}__{task["instr"]}'
     return str(task)
 
@@ -274,7 +274,7 @@ def evaluate_in_sim(
 
     stats = {'returns': [], 'lengths': [], 'successes': []}
 
-    # ✅ eval 模式：按 orig_instr / rephrasal_type 聚合
+    # eval mode: aggregate by orig_instr / rephrasal_type
     if lorel_task == "eval":
         instr_wise_stats = {k: [] for k in LORL_EVAL_INSTRS.keys()}
         rephrasal_wise_stats = {k: [] for k in ['seen', 'unseen verb', 'unseen noun', 'unseen verb noun', 'human']}
@@ -289,7 +289,7 @@ def evaluate_in_sim(
         "max_weigh_words_dict": {i: [] for i in range(num_options)}
     }
 
-    # ✅ dict task 不能做 key，用 task_id
+    # dict task cannot be used as key, use task_id instead
     saved_gif = {_task_id(t): {"success": False, "fail": False} for t in tasks}
 
     for _ in tqdm(range(1, num_eval_episodes + 1), desc="Evaluating"):
@@ -350,7 +350,7 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--num_eval_episodes", type=int, default=10)
     ap.add_argument("--lorel_task", default="compose")
-    ap.add_argument("--memmap_dir", default=None, help="不传则优先用 ckpt['config'].task.memmap_dir")
+    ap.add_argument("--memmap_dir", default=None, help="optional, ckpt['config'].task.memmap_dir")
     ap.add_argument("--device", default=None, help="cuda:0 / cpu")
     args = ap.parse_args()
 
@@ -371,7 +371,7 @@ def main():
         elif hasattr(cfg, "model") and hasattr(cfg.model, "memmap_dir"):
             memmap_dir = cfg.model.memmap_dir
         else:
-            raise RuntimeError("找不到 memmap_dir：请传 --memmap_dir")
+            raise RuntimeError("Cannot find memmap_dir: please pass --memmap_dir")
 
     if diff_args.backbone == "transformer":
         model = SkillAttentionTransformerLorelModel(
@@ -394,16 +394,16 @@ def main():
 
     # make env
     if "lorel" not in cfg.task.name:
-        raise RuntimeError("你贴的 evaluate() 只在 LoReL env 有意义（self.env None 会直接 return）")
+        raise RuntimeError("The evaluate() function you provided only makes sense in LoReL env (self.env None will directly return)")
 
     import gym
     import lorl_env  # noqa: F401
     env = gym.make(cfg.env.name)
 
-    # wandb resume（写回训练 run）
+    # wandb resume
     task_tag = getattr(cfg.model, "task_name", "all")
     exp_name = f"{task_tag}-H{cfg.model.horizon}"
-    exp_dir = os.path.abspath(os.path.join(os.path.dirname(args.ckpt), ".."))  # checkpoints 上一级
+    exp_dir = os.path.abspath(os.path.join(os.path.dirname(args.ckpt), ".."))  # one level up from checkpoints
     init_wandb_resume_from_exp_dir(cfg, exp_dir, exp_name)
 
     # eval

@@ -9,7 +9,7 @@ project_name: "SkillAttention"
 
 wandb: True
 outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
-hydra_base_dir: ""                       # ✅ 新增，先给个空字符串占位
+hydra_base_dir: ""                       
 
 trainer:
   device: null
@@ -43,7 +43,7 @@ model:
   horizon: ${task.horizon}
   n_obs_steps: 2
   n_action_steps: 8
-  # 这些从 task 继承，方便不同任务改
+  # adapt from task yaml
   action_dim: ${task.action_dim}
   proprio_dim: ${task.proprio_dim}
   option_dim: ${model.option_selector.option_dim}
@@ -101,13 +101,10 @@ diffuser:
 
 hydra:
   job:
-    # run 名字，你可以用模型名 / 任务名等
     name: ${model.name}
     override_dirname: ""
   run:
-    # 单次运行的根目录：类似 /.../skdif_attention_outputs/2025-12-06/
     dir: ${outputs_root}/${task.task_lang}/${now:%Y-%m-%d}/${now:%H-%M}
   sweep:
-    # 如果以后用 -m 做多组实验，可以把它们放在 multirun 下面
     dir: ${outputs_root}/${task.task_lang}/${now:%Y-%m-%d}/${now:%H-%M}
     subdir: ${hydra.job.num}

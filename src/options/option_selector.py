@@ -7,34 +7,6 @@ from src.options.option_transformer import OptionTransformer
 from src.workspace.utils import pad, entropy
 from src.options.vector_quantize_pytorch import VectorQuantize
 
-# def _column_coverage_loss_from_logits(sim_logits, tau=0.7, eps=1e-8):
-#     """
-#     sim_logits: [B, T, C]  每个列（时间位）对 C 个码字的相似度
-#     返回：标量 loss，鼓励每一列的使用分布接近均匀（最大熵）
-#     """
-#     # 软责任（温度 τ）
-#     probs = F.softmax(sim_logits / tau, dim=-1)          # [B, T, C]
-#     p_mean = probs.mean(dim=0)                           # [T, C]  每列在 batch 上的平均使用分布
-#     # KL(Uniform || p_mean) = const - H(p_mean)；最小化即最大化熵
-#     C = p_mean.size(-1)
-#     uniform = p_mean.new_full((C,), 1.0 / C)
-#     # cross-entropy(uniform, p_mean) = - sum (1/C) * log p_mean
-#     loss_per_col = -(uniform * (p_mean.clamp_min(eps).log())).sum(dim=-1)  # [T]
-#     return loss_per_col.mean()
-
-# def _sim_logits(vq_module, option_preds):
-#     """
-#     用当前 codebook 和投影得到相似度 logits，形状 [B, T, C]
-#     vq_module: VectorQuantize 实例 (self.Z 或 self.cross_attn_Z)
-#     option_preds: [B, T, D]
-#     """
-#     x_proj = vq_module.project_in(option_preds)                 # [B, T, Cdim]
-#     x_proj = F.normalize(x_proj, dim=-1)
-#     cb = F.normalize(vq_module.codebook, dim=-1)               # [C, Cdim]
-#     # [B, T, Cdim] x [Cdim, C] -> [B, T, C]
-#     sim = torch.einsum('btc,kc->btk', x_proj, cb)
-#     return sim
-
 class OptionSelector(nn.Module):
     """
     输入:
@@ -46,7 +18,7 @@ class OptionSelector(nn.Module):
     def __init__(
             self,
             lang_dim,
-            state_dim,      # 这里同样是 img_embeddings 的维度（int）
+            state_dim,      # img_embeddings dim
             num_options,
             option_dim,
             option_transformer=None,
@@ -117,14 +89,13 @@ class OptionSelector(nn.Module):
                 **kwargs):
         """
         img_embeddings: [B, 2 * n_obs_steps, D_img_cat]
-        这里我们只用前 n_obs_steps image embeddings 作为条件
         """
         B, L, D = img_embeddings.shape
 
         option_hidden_states = self.Z.project_out(self.Z.codebook)  # [C, D_opt]
         dt_ret = self.option_dt(
             word_embeddings,
-            img_embeddings,    # 当成 states
+            img_embeddings,    # states
             timesteps,
             attention_mask,
             lang_mask,
@@ -159,26 +130,26 @@ class OptionSelector(nn.Module):
     @torch.no_grad()
     def get_option(self,
                    word_embeddings,     # [B,Lt,D] or [Lt,D]
-                   img_embeddings,      # [B,T,D] or [T,D]，这里当作 states
+                   img_embeddings,      # [B,T,D] or [T,D], treated here as states
                    timesteps=None,      # [B,T] or [T]
-                   state_mask=None,     # [B,T] or [T]，1=valid, 0=padding
-                   lang_mask=None,      # [B,Lt] or [Lt]，1=valid, 0=padding
+                   state_mask=None,     # [B,T] or [T], 1=valid, 0=padding
+                   lang_mask=None,      # [B,Lt] or [Lt], 1=valid, 0=padding
                    **kwargs):
         """
-        推理接口：给出整段 n_obs 窗口观测
-        返回最后一个 option 向量、对应的离散 idx、soft_idx。
+        Inference API: given an entire n_obs window of observations.
+        Returns the last option vector, the corresponding discrete index, and soft_idx.
 
-        - word_embeddings: 语言 token 的 embedding    [B,Lt,D]
-        - img_embeddings: 观测编码后的 state embedding [B,T,D]
+        - word_embeddings: language token embeddings    [B,Lt,D]
+        - img_embeddings:  state embeddings after observation encoding [B,T,D]
         """
 
-        # 1) constant_option 模式：直接用 codebook 某个索引
+        # 1) constant_option mode: directly use a specific index from the codebook
         if 'constant_option' in kwargs:
             idx = kwargs['constant_option']
             option_vec = self.Z.project_out(self.Z.codebook[idx])   # [D_opt]
             return option_vec, torch.tensor(idx, device=option_vec.device), None
 
-        # 2) 统一 batch 维度
+        # 2) unify batch dimension
         if img_embeddings.dim() == 2:
             img_embeddings = img_embeddings.unsqueeze(0)    # [1,T,D]
         if word_embeddings.dim() == 2:
@@ -205,8 +176,8 @@ class OptionSelector(nn.Module):
         elif lang_mask.dim() == 1:
             lang_mask = lang_mask.unsqueeze(0)
 
-        # 5) 调用训练时同一个 forward 接口
-        #    注意这里假设 forward(word_emb, states, timesteps, state_mask, lang_mask, **kwargs)
+        # 5) Call the same forward interface used during training
+        #    Note we assume forward(word_emb, states, timesteps, state_mask, lang_mask, **kwargs)
         options, option_indx, soft_scores, _, _ = self.forward(
             word_embeddings,
             img_embeddings,
@@ -217,7 +188,6 @@ class OptionSelector(nn.Module):
         )
         # options:      [B,T,D_opt]
         # option_indx:  [B,T]
-        # soft_scores:  [B,T,num_codes] 之类
+        # soft_scores:  [B,T,num_codes] etc.
 
-        # 返回最后一个时间步的 option 向量和索引
         return options, option_indx, soft_scores
