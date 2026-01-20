@@ -12,9 +12,6 @@ from arm.rm_robot_interface import *
 logging.basicConfig(level=logging.INFO)
 logger_ = logging.getLogger(__name__)
 
-import json
-
-# copy里面的POSE在我们这里面是Pose
 
 Joints = ctypes.c_float * 6
 GRIPPER_SPEED = 0.5
@@ -61,8 +58,8 @@ class my_Arm():
         joints = [res[1]['joint'][i] for i in range(6)]
         pose = [res[1]['pose'][i] for i in range(6)]
         quaternion = euler2quat(pose[3], pose[4], pose[5])  
-        pose = pose[:3] + quaternion  # 四元数格式转换wxyz->xyzw
-        return joints, pose # 返回位置+四元数
+        pose = pose[:3] + quaternion  # Quaternion format conversion wxyz->xyzw
+        return joints, pose # return position + quaternion
     
     def get_joints_angles_and_pose(self):
         res = self.arm.rm_get_current_arm_state()
@@ -85,25 +82,26 @@ class my_Arm():
         self.arm.rm_movej(joints, v = v, **kwargs)
 
     def setJoints_CANFD(self, joints, follow=False):
-        # 透传是不过机械臂的算法直接控制关节的运动接口，用于用户自行规划算法，高跟随是机械臂不对路径做优化 下发点位关节就运动
-        # 低跟随是机械臂对下发的路径点进行一些插补，保障运行的顺滑
-        ret = self.arm.rm_movej_canfd(joints, follow)  # 不确定是不是高跟随----低跟随
+        # Pass-through is an interface that controls joints directly without the arm's algorithm, for user-planned algorithms.
+        # High follow means the arm does not optimize the path and moves to the provided joint points.
+        # Low follow means the arm performs some interpolation on the provided path points to ensure smooth motion.
+        ret = self.arm.rm_movej_canfd(joints, follow)  # Not sure if this is high follow or low follow
         return ret
     
     def setGripperRelease(self, speed=1000, block=True, timeout=4):
         self.arm.rm_set_gripper_release(speed, block, timeout)  # position:0-1000
 
     def setPose_P(self, pose, speed=20, curvatureR=0, block=1):  # speed:0~100%
-        # use joints space,it can go where it can go. And it need palnner, so it cost a very short time to start move
+        # Uses joint space; it can go wherever allowed. It requires a planner, so it starts moving quickly.
         ret = self.arm.rm_movej_p(pose, speed, r=curvatureR, block=block)
         return ret
 
     def setPose(self, pose, speed=10, curvatureR=0, connect=0, block=0):  # speed:0~100%
-        # use Descartes space,it goes along straight line, so sometimes it can't go someplace it can go
+        # Uses Cartesian space; it moves along a straight line, so sometimes it cannot reach places that joint-space can.
         ret = self.arm.rm_movel(pose, speed, r=curvatureR, connect=connect, block=block)
         return ret
 
-    def setPose_CANFD(self, pose, follow=False):  # speed:0~100%     不确定是否可以6pose
+    def setPose_CANFD(self, pose, follow=False):  # speed:0~100%     not sure if 6-DOF poses are supported
         tag = self.arm.rm_movep_canfd(pose, follow)
         return tag
 
@@ -140,7 +138,7 @@ class my_Arm():
 
     def __del__(self):
         self.arm.rm_delete_robot_arm()
-        logger_.info(f'关闭与机械臂的Socket连接')
+        logger_.info(f'Closed socket connection with the robotic arm')
 
 if __name__ == "__main__":
     arm = my_Arm(wifi=False)

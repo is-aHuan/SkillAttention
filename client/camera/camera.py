@@ -14,7 +14,7 @@ class Realsense():
         # self.spatial_filter = rs.spatial_filter()
         # self.spatial_filter.set_option(rs.option.holes_fill, 5)
 
-        # 启动相机流
+        # Start camera stream
         self.pipeline.start(config)
 
         device = self.pipeline.get_active_profile().get_device()
@@ -22,23 +22,16 @@ class Realsense():
         sensor.set_option(rs.option.enable_auto_exposure, 1)
 
         self.s = device.first_roi_sensor()
-        # 获取ROI测光区域
-        # self.roi = self.s.get_region_of_interest()
-        # # self.roi.min_x, self.roi.min_y, self.roi.max_x, self.roi.max_y = 250,30,450,250
-        # self.roi.min_x, self.roi.min_y, self.roi.max_x, self.roi.max_y = 20,20,580,420 # 列索引
-        # # 设置ROI测光区域
-        # self.s.set_region_of_interest(self.roi)
-
-        self.get_frame(drop=5)  # 扔掉垃圾帧，并且初始化内参数变量
+        self.get_frame(drop=5)  # discard garbage frames and initialize intrinsic parameters
 
     def get_frame(self, drop=0):
-        # 扔掉垃圾帧
+        # discard garbage frames
         for i in range(drop):
             frames = self.pipeline.wait_for_frames()
 
         frames = self.pipeline.wait_for_frames()
 
-        # 对齐到彩图
+        # align to color frame
         align = rs.align(rs.stream.color)
         frames = align.process(frames)
 
@@ -46,15 +39,15 @@ class Realsense():
         color_frame = frames.get_color_frame()
 
         if not depth_frame or not color_frame:
-            raise Exception("无法获取帧数据")
+            raise Exception("Unable to get frame data")
 
         self.depth_intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
 
-        # 将深度数据转换为numpy数组
+        # Convert depth data to numpy array
         depth_image = np.asanyarray(depth_frame.get_data())
         color_image = np.asanyarray(color_frame.get_data())
 
-        # 膨胀补空洞
+        # Dilate to fill holes
         kernel = np.ones((5, 5), np.uint8)
         depth_image = cv2.dilate(depth_image, kernel, iterations=3)
 
@@ -62,9 +55,9 @@ class Realsense():
     
     def get_frame_timestamp(self):
         frames = self.pipeline.wait_for_frames()
-        host_ts_us = frames.get_timestamp() * 1_000_000  # 转换为纳秒
+        host_ts_us = frames.get_timestamp() * 1_000_000  # convert to nanoseconds
 
-        # 对齐到彩图
+        # align to color frame
         align = rs.align(rs.stream.color)
         frames = align.process(frames)
         color_frame = frames.get_color_frame()
@@ -111,50 +104,50 @@ class Realsense():
 
     def get_coordinate_from_pic(self, x, y, depth_frame):
         """
-        根据画面坐标获取相机坐标系下的坐标
+        Get camera coordinates from image pixel coordinates
         """
         depth = depth_frame.get_distance(x, y)
         if depth == 0:
-            raise Exception("深度获取失败")
+            raise Exception("Failed to get depth")
 
-        # 获取相机内参
+        # Get camera intrinsics
         self.depth_intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
 
-        # 将像素点坐标和深度值转换为相机坐标系下的坐标
+        # Deproject pixel and depth to camera coordinates
         camera_coordinate = rs.rs2_deproject_pixel_to_point(self.depth_intrinsics, (x, y), depth)
-        print(f"像素点 ({x}, {y}) 相对于相机坐标系的坐标为: {camera_coordinate}， 物体中心深度为 {depth}")
+        print(f"Pixel ({x}, {y}) in camera coordinates: {camera_coordinate}, object center depth: {depth}")
 
         return camera_coordinate
 
     def get_point_cloud(self, depth_image, mask=None, vis_flag=1):
 
-        # 深度单位变为m
+        # Convert depth units to meters
         depth_image = depth_image / 1000
         rows, cols = depth_image.shape
 
-        # 使用 meshgrid 生成行和列的网格坐标
+        # Use meshgrid to generate row and column grid coordinates
         rows_grid, cols_grid = np.meshgrid(np.arange(rows), np.arange(cols))
-        # 打印行和列的网格坐标
+        # Create grid coordinates for rows and columns
         pc = np.concatenate(
             [rows_grid.T[:, :, np.newaxis], cols_grid.T[:, :, np.newaxis], depth_image[:, :, np.newaxis]], axis=-1) # (H, W, 3)
-        # 这时pc是一个三维array，最后一个维度的长度是3，其内容与索引值存在重叠，如pc[x, y]的值是[x, y, depth]
+        # Now pc is a 3D array with last dim length 3, containing [row, col, depth] for each pixel
 
         pc = pc.reshape(-1, 3) # (H*W, 3)
-        # 计算在相机坐标系下的坐标值
+        # Compute coordinates in the camera coordinate system
         fx, fy, cx, cy = self.depth_intrinsics.fx, self.depth_intrinsics.fy, self.depth_intrinsics.ppx, self.depth_intrinsics.ppy
         pc[:, 0] = (pc[:, 0] - cy) / fy * pc[:, 2]
         pc[:, 1] = (pc[:, 1] - cx) / fx * pc[:, 2]
 
 
-        # 显示整幅图像的点云
+        # Display the full image point cloud
         if vis_flag in [2]:
             point_cloud = o3d.geometry.PointCloud()
-            point_cloud.points = o3d.utility.Vector3dVector(pc)  # 将点转换为Open3D的Vector3dVector格式
+            point_cloud.points = o3d.utility.Vector3dVector(pc)  # convert points to Open3D Vector3dVector
             mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.3, origin=[0, 0, 0])
             o3d.visualization.draw_geometries([point_cloud, mesh_frame])
 
             if mask:
-                # 如果有mask，则把区域外深度设为0后再显示一次点云
+                # If mask provided, set depth outside region to 0 and display point cloud again
                 masked_pc = pc.reshape(rows, cols, 3)
                 masked_pc[mask != True, 2] = 0
                 masked_pc = masked_pc.reshape(-1, 3)
@@ -163,13 +156,13 @@ class Realsense():
                 o3d.visualization.draw_geometries([point_cloud])
 
         pc = pc.reshape(rows, cols, 3)
-        pc = pc[:, :, [1, 0, 2]]  # 切换为行列索引
+        pc = pc[:, :, [1, 0, 2]]  # Switch to row-column ordering
 
         return pc
 
     def get_flat_point_cloud_optmized_by_mask(self, depth_image, mask, vis_flag=1):
         # use mask to complete depth hole of flat area
-        # 深度单位变为m
+        # Convert depth units to meters
         depth_image = depth_image / 1000
         rows, cols = depth_image.shape
         # use mask to complete depth hole
@@ -182,30 +175,30 @@ class Realsense():
         # ============old===============
         # ============new===============
 
-        # 获取点云
+        # Get point cloud
         depth_image = depth_image * 1000
         pc = self.get_point_cloud(depth_image, vis_flag=vis_flag) # (H, W, 3)
-        # 按照mask筛选点云
+        # Filter point cloud by mask
         pc = pc.reshape(-1, 3)  # array (H*W, 3)
         H, W = mask.shape
         mask = mask.flatten()  # array (H*W) dtype=bool
 
-        # 删掉地面上的点云
+        # Remove ground points from mask
         index = pc[:, 2] > 0.72
         mask[index] = False
 
         pc = pc[mask == True] # (n, 3)
-        # 按照阈值筛选点云
+        # Filter point cloud by depth thresholds
         pc = pc[pc[:, 2] > 0.1]
         pc = pc[pc[:, 2] < 0.72]
-        # 平面检测
-        pc_o3d = o3d.geometry.PointCloud()  # 创建点云类
+        # Plane detection
+        pc_o3d = o3d.geometry.PointCloud()  # create point cloud object
         pc_o3d.points = o3d.utility.Vector3dVector(pc)
-        plane_model, inliers = pc_o3d.segment_plane(distance_threshold=0.005,  # 点到估计平面的最大距离，以便被认为是内点
-                                                ransac_n=5,  # 用于估计平面的随机采样点的数量
-                                                num_iterations=1000)  # 随机平面被采样和验证的次数
-        # 上述函数的作用是平面检测，其返回值为平面方程（ax+by+cz+d=0）和内点的索引。Tuple[numpy.ndarray[numpy.float64[4, 1]], List[int]]
-        pc_o3d = pc_o3d.select_by_index(inliers)  # 获得筛选平面点云
+        plane_model, inliers = pc_o3d.segment_plane(distance_threshold=0.005,  # max distance from point to plane to be considered an inlier
+                                                ransac_n=5,  # number of points to sample for plane estimation
+                                                num_iterations=1000)  # number of RANSAC iterations
+        # The function performs plane detection and returns the plane equation (ax+by+cz+d=0) and indices of inliers.
+        pc_o3d = pc_o3d.select_by_index(inliers)  # Select the plane point cloud by inliers
 
         pc = np.asarray(pc_o3d.points)
         avg_mask_depth = np.mean(pc[:, 2])
@@ -216,28 +209,28 @@ class Realsense():
         print(f'avg_mask_depth {avg_mask_depth}')
 
 
-        # 使用 meshgrid 生成行和列的网格坐标
+        # Use meshgrid to generate row and column grid coordinates
         rows_grid, cols_grid = np.meshgrid(np.arange(rows), np.arange(cols))
-        # 打印行和列的网格坐标
+        # Create grid coordinates for rows and columns
         pc = np.concatenate(
             [rows_grid.T[:, :, np.newaxis], cols_grid.T[:, :, np.newaxis], depth_image[:, :, np.newaxis]], axis=-1) # (H, W, 3)
-        # 这时pc是一个三维array，最后一个维度的长度是3，其内容与索引值存在重叠，如pc[x, y]的值是[x, y, depth]
+        # Now pc is a 3D array with last dim length 3, containing [row, col, depth] for each pixel
 
         pc = pc.reshape(-1, 3) # (H*W, 3)
-        # 计算在相机坐标系下的坐标值
+        # Compute coordinates in the camera coordinate system
         fx, fy, cx, cy = self.depth_intrinsics.fx, self.depth_intrinsics.fy, self.depth_intrinsics.ppx, self.depth_intrinsics.ppy
         pc[:, 0] = (pc[:, 0] - cy) / fy * pc[:, 2]
         pc[:, 1] = (pc[:, 1] - cx) / fx * pc[:, 2]
 
-        # 显示整幅图像的点云
+        # Display the full image point cloud
         if vis_flag in [2]:
             point_cloud = o3d.geometry.PointCloud()
-            point_cloud.points = o3d.utility.Vector3dVector(pc)  # 将点转换为Open3D的Vector3dVector格式
+            point_cloud.points = o3d.utility.Vector3dVector(pc)  # convert points to Open3D Vector3dVector
             mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.3, origin=[0, 0, 0])
             o3d.visualization.draw_geometries([point_cloud, mesh_frame])
 
             # if mask:
-            #     # 如果有mask，则把区域外深度设为0后再显示一次点云
+            #     # If mask provided, set depth outside region to 0 and display point cloud again
             #     masked_pc = pc.reshape(rows, cols, 3)
             #     masked_pc[mask != True, 2] = 0
             #     masked_pc = masked_pc.reshape(-1, 3)
@@ -246,7 +239,7 @@ class Realsense():
             #     o3d.visualization.draw_geometries([point_cloud])
 
         pc = pc.reshape(rows, cols, 3)
-        pc = pc[:, :, [1, 0, 2]]  # 切换为行列索引
+        pc = pc[:, :, [1, 0, 2]]  # Switch to row-column ordering
 
         return pc, mask.reshape(H, W)
 
@@ -259,7 +252,7 @@ class Realsense():
             color_image, depth_image, depth_frame = self.get_frame()
             # Apply colormap on depth image (image must be converted to 8-bit per pixel first)
             depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-            cv2.rectangle(color_image, (roi.min_x, roi.min_y), (roi.max_x, roi.max_y), (0, 0, 255), 2)  # 红色边框，线条宽度为 2
+            cv2.rectangle(color_image, (roi.min_x, roi.min_y), (roi.max_x, roi.max_y), (0, 0, 255), 2)  # Red rectangle, line width 2
 
             # Stack both images horizontally
             images1 = np.hstack((color_image, depth_colormap))
@@ -267,8 +260,8 @@ class Realsense():
             cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
             cv2.imshow('before setting roi', images1)
 
-        roi.min_x, roi.min_y, roi.max_x, roi.max_y = x1, y1, x2, y2 # 列索引
-        # 设置ROI测光区域
+        roi.min_x, roi.min_y, roi.max_x, roi.max_y = x1, y1, x2, y2 # column indices
+        # Set ROI for metering
         self.s.set_region_of_interest(roi)
         time.sleep(0.2)
         roi = self.s.get_region_of_interest()
@@ -278,7 +271,7 @@ class Realsense():
             color_image, depth_image, depth_frame = self.get_frame()
             # Apply colormap on depth image (image must be converted to 8-bit per pixel first)
             depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-            cv2.rectangle(color_image, (roi.min_x, roi.min_y), (roi.max_x, roi.max_y), (0, 0, 255), 2)  # 红色边框，线条宽度为 2
+            cv2.rectangle(color_image, (roi.min_x, roi.min_y), (roi.max_x, roi.max_y), (0, 0, 255), 2)  # Red rectangle, line width 2
 
             # Stack both images horizontally
             images1 = np.hstack((color_image, depth_colormap))
@@ -292,18 +285,14 @@ class Realsense():
         frames = self.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
         if not color_frame:
-            raise Exception("无法获取彩色帧数据")
-        # 获取相机传感器时间戳（微秒，相对时间）
-        camera_ts_ns = color_frame.get_timestamp() * 1_000_000  # 转换为纳秒
+            raise Exception("Unable to get color frame data")
+        # Get camera sensor timestamp (microseconds, relative)
+        camera_ts_ns = color_frame.get_timestamp() * 1_000_000  # convert to nanoseconds
         return camera_ts_ns
 
 if __name__ == '__main__':
     cam = Realsense()
     while True:
-        # camera_timestamp = cam.get_timestamp()
-        # print(f"相机时间戳：{camera_timestamp:.3f} 纳秒")
-        # print('=' * 30)
-        # time.sleep(1)
         cam.vis_stream()
 
         time.sleep(0.1)

@@ -11,20 +11,20 @@ from typing import List, Any
 import pyrealsense2 as rs
 from arm.arm import my_Arm
 
-# 更新的图像尺寸
+# Updated image size
 IMG_HEIGHT = 240
 IMG_WIDTH = 320
 CAM_HEAD_SERIAL = "335222074941"
 CAM_WRIST_SERIAL = "243122076407"
 ROBOT_INIT_JOINTS = [-35.407, 5.368, -116.107, -4.17, -34.731, 5.578]
 
-# 远程推理服务器的地址
+# Remote inference server URI
 SERVER_URI = "ws://127.0.0.1:8080/ws/infer"
 
 def euler_xyz_to_matrix(euler):
     """
-    euler: [..., 3], XYZ 顺序, 单位: 弧度
-    返回:  [..., 3, 3] 旋转矩阵
+    euler: [..., 3], XYZ order, units: radians
+    Returns: [..., 3, 3] rotation matrix
     """
     roll = euler[..., 0]
     pitch = euler[..., 1]
@@ -37,7 +37,7 @@ def euler_xyz_to_matrix(euler):
     cy = np.cos(yaw)
     sy = np.sin(yaw)
 
-    # R = Rz * Ry * Rx （根据你的实际约定，注意这里只是示例）
+    # R = Rz * Ry * Rx 
     R = np.empty(euler.shape[:-1] + (3, 3), dtype=np.float32)
 
     R[..., 0, 0] = cy * cp
@@ -57,7 +57,7 @@ def euler_xyz_to_matrix(euler):
 def matrix_to_rot6d(R):
     """
     R: [..., 3, 3]
-    rot6d: [..., 6]，取前两列 flatten
+    rot6d: [..., 6], take the first two columns and flatten
     """
     rot6d = R[..., :, :2]   # [..., 3, 2]
     rot6d = rot6d.reshape(R.shape[:-2] + (6,))
@@ -69,10 +69,10 @@ def euler_to_rot6d(euler):
 
 def euler_xyz_to_quat(euler):
     """
-    euler: [..., 3], 假设是 XYZ 顺序, 单位: 弧度（支持列表/NumPy数组输入）
-    返回:  [..., 4], 四元数 (w, x, y, z)
+    euler: [..., 3], assumed XYZ order, units: radians (supports list/NumPy input)
+    Returns: [..., 4], quaternion (w, x, y, z)
     """
-    # 关键修复：先将输入转为NumPy数组
+    # Key fix: convert input to a NumPy array first
     euler = np.array(euler, dtype=np.float32)
     roll = euler[..., 0]
     pitch = euler[..., 1]
@@ -93,7 +93,7 @@ def euler_xyz_to_quat(euler):
     quat = np.stack([qw, qx, qy, qz], axis=-1)
     return quat.astype(np.float32)
 
-# 数据获取
+# Data acquisition
 def _convert_frame(frame: rs.video_frame, height: int, width: int) -> np.ndarray:
     arr = np.asanyarray(frame.get_data())  # (H, W, 3) RGB
     if arr.dtype != np.uint8:
@@ -104,9 +104,7 @@ def _convert_frame(frame: rs.video_frame, height: int, width: int) -> np.ndarray
 
 def get_head_state(head_frame: rs.video_frame, height: int, width: int) -> List[List[List[float]]]:
     head = _convert_frame(head_frame, height, width)
-    # 修复：先转numpy数组为list，再递归转所有元素为Python float
     head_np = (head.astype(np.float32) / 255.0)
-    # 嵌套列表转换：用列表推导式逐元素转float
     head_state = [[[float(val) for val in row] for row in channel] for channel in head_np.tolist()]
     return head_state
 
@@ -120,11 +118,10 @@ def get_robot_proprio(robot: my_Arm) -> List[float]:
     _, pose = robot.getState()
     quat = euler_xyz_to_quat(pose[3:6])
     grip_pos = robot.get_gripper_position()
-    # 修复：将quat的每个元素转为Python float
     proprio = pose[:3] + [float(q) for q in quat.tolist()] + [float(grip_pos)]
     return proprio
 
-# 初始化相机
+# Initialize cameras
 def init_cameras():
     head_pipe = rs.pipeline()
     head_cfg = rs.config()
@@ -139,14 +136,14 @@ def init_cameras():
     wrist_pipe.start(wrist_cfg)
     return head_pipe, wrist_pipe
 
-# 初始化机器人
+# Initialize robot
 def init_robot():
     robot = my_Arm(wifi=False)
     robot.setJoints(ROBOT_INIT_JOINTS, v=30, r=0, connect=0, block=1)
     robot.setGripperRelease()
     return robot
 
-# 发送动作给机器人
+# Send actions to robot
 def execute_action_chunk(robot: my_Arm, actions: List[Any]):
     for idx, act in enumerate(actions):
         arr = np.array(act, dtype=np.float32)
@@ -164,20 +161,20 @@ def execute_action_chunk(robot: my_Arm, actions: List[Any]):
 
         print(f"[Action {idx}] joints(deg)={joint_degs} gripper={grip_pos}")
 
-# 远程推理
+# Remote inference loop
 async def loop():
-    # 初始化相机和机器人
+    # Initialize cameras and robot
     head_pipe, wrist_pipe = init_cameras()
     robot = init_robot()
 
-    language_task = "pick up the blue cube"  # 语言命令
+    language_task = "pick up the blue cube"  # language command
     img_height = IMG_HEIGHT
     img_width = IMG_WIDTH
 
     first_request = True
     actions = []
 
-    # 初始化 websocket 连接
+    # Initialize websocket connection
     async with websockets.connect(SERVER_URI, ping_interval=30, ping_timeout=60, max_size=20 * 1024 * 1024) as ws:
         while True:
             if first_request:
@@ -188,12 +185,12 @@ async def loop():
                 head_color = head_frames.get_color_frame()
                 wrist_color = wrist_frames.get_color_frame()
 
-                # 获取图像数据并转换为适合发送的格式
+                # Get image data and convert to format suitable for sending
                 head_state = get_head_state(head_color, img_height, img_width)
                 wrist_state = get_wrist_state(wrist_color, img_height, img_width)
                 proprio = get_robot_proprio(robot)
 
-                # 将数据发送给推理服务器
+                # Send data to inference server
                 await ws.send(json.dumps({"head": head_state, 
                                           "wrist": wrist_state, 
                                           "proprio": proprio, 
@@ -201,25 +198,25 @@ async def loop():
                                           "request_action": False})
                                           )
                 
-                # 接收推理结果
+                # Receive inference result
                 resp = json.loads(await ws.recv())
                 if not resp.get("ok"):
                     print("Inference error:", resp)
                     await asyncio.sleep(0.5)
                     continue
 
-                # 获取最新的相机帧
+                # Get the latest camera frames
                 head_frames = head_pipe.wait_for_frames()
                 wrist_frames = wrist_pipe.wait_for_frames()
                 head_color = head_frames.get_color_frame()
                 wrist_color = wrist_frames.get_color_frame()
 
-                # 获取图像数据并转换为适合发送的格式
+                # Get image data and convert to format suitable for sending
                 head_state = get_head_state(head_color, img_height, img_width)
                 wrist_state = get_wrist_state(wrist_color, img_height, img_width)
                 proprio = get_robot_proprio(robot)
 
-                # 将数据发送给推理服务器
+                # Send data to inference server
                 await ws.send(json.dumps({"head": head_state, 
                                         "wrist": wrist_state, 
                                         "proprio": proprio, 
@@ -227,7 +224,7 @@ async def loop():
                                         "request_action": True})
                                         )
 
-                # 接收推理结果
+                # Receive inference result
                 resp = json.loads(await ws.recv())
                 if not resp.get("ok"):
                     print("Inference error:", resp)
@@ -240,7 +237,7 @@ async def loop():
             else:
                 actions = action_recieve
 
-            # 执行动作
+            # Execute actions
             for idx, act in enumerate(actions):
                 arr = np.array(act, dtype=np.float32)
                 if arr.shape[0] < 7:
@@ -261,19 +258,19 @@ async def loop():
                     head_color = head_frames.get_color_frame()
                     wrist_color = wrist_frames.get_color_frame()
 
-                    # 获取图像数据并转换为适合发送的格式
+                    # Get image data and convert to format suitable for sending
                     head_state = get_head_state(head_color, img_height, img_width)
                     wrist_state = get_wrist_state(wrist_color, img_height, img_width)
                     proprio = get_robot_proprio(robot)
 
-                    # 将数据发送给推理服务器
+                    # Send data to inference server
                     await ws.send(json.dumps({"head": head_state, 
                                             "wrist": wrist_state, 
                                             "proprio": proprio, 
                                             "lang": language_task, 
                                             "request_action": False})
                                             )
-                    # 接收推理结果
+                    # Receive inference result
                     resp = json.loads(await ws.recv())
                     if not resp.get("ok"):
                         print("Inference error:", resp)
@@ -281,7 +278,7 @@ async def loop():
                         continue
 
             actions = []
-            # 更新相机状态并继续
+            # Update camera states and continue
             head_frames = head_pipe.wait_for_frames()
             wrist_frames = wrist_pipe.wait_for_frames()
             head_color = head_frames.get_color_frame()
@@ -290,7 +287,7 @@ async def loop():
             next_wrist_state = get_wrist_state(wrist_color, img_height, img_width)
             proprio = get_robot_proprio(robot)
 
-            # 继续请求下一步的动作
+            # Continue requesting the next actions
             await ws.send(json.dumps({
                 "head": next_head_state,
                 "wrist": next_wrist_state,
