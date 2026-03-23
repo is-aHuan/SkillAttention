@@ -9,10 +9,10 @@ from src.options.vector_quantize_pytorch import VectorQuantize
 
 class OptionSelector(nn.Module):
     """
-    输入:
+    Inputs:
       - word_embeddings: [B, L_text, D_lang]
-      - img_embeddings:  [B, T, D_img_cat]   ← 已经把 head/wrist 两路图像 cat 好
-    只用前 n_obs_steps 个 img_embeddings 作为条件。
+      - img_embeddings:  [B, T, D_img_cat]   <- head/wrist image streams already concatenated
+    Only the first n_obs_steps of img_embeddings are used as conditioning.
     """
 
     def __init__(

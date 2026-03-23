@@ -2,7 +2,6 @@
 export WANDB_MODE=offline
 export CUDA_VISIBLE_DEVICES="3"
 
-# 统一一次时间戳，所有进程共享
 RUN_ID=$(date +%Y-%m-%d-%H-%M-%S)
 OUTPUT_ROOT="/home/lyh/data_folder/skdif_tune_outputs"
 

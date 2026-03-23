@@ -28,7 +28,7 @@ class SkillConditionDiffusion(nn.Module):
         self.clip_denoised = clip_denoised
         self.n_timesteps = n_timesteps
         # self.condition_guidance_w = condition_guidance_w
-        # self.returns_condition = returns_condition  # 用 classifier-free guidance 与否
+        # self.returns_condition = returns_condition  # whether to use classifier-free guidance
 
         # --- diffusion coefficients initialization ---
         betas = cosine_beta_schedule(n_timesteps)
@@ -196,4 +196,3 @@ class SkillConditionDiffusion(nn.Module):
         return self.conditional_sample(global_cond=global_cond,
                                        local_cond=local_cond,
                                        horizon=horizon)
-

@@ -24,10 +24,10 @@ def slugify_task_name(name: str, max_len: int = 80) -> str:
 
 def image_to_chw_float(img: Any, shape: list[int, int]) -> Optional[np.ndarray]:
     """
-    将各种可能的图像表示统一转成:
+    Normalize possible image representations into:
         - float32
         - [0,1]
-        - 形状 (3, H, W)
+        - shape (3, H, W)
     """
 
     a = None  # final RGB uint8 HWC
@@ -607,7 +607,7 @@ class RealmanExpertDataset(Dataset):
                     new_list.append(arr[0::ss])
                 trajs[k] = new_list
 
-            # lengths 也要更新
+            # lengths must be updated too
             trajs["lengths"] = [len(x) for x in trajs["head_images"]]
 
         return trajs
@@ -648,7 +648,7 @@ class RealmanExpertDataset(Dataset):
         action_scale = np.where(action_range < range_eps, 1.0, 2.0 / (action_max - action_min))
         action_offset = np.where(action_range < range_eps, -action_min, -(action_max + action_min) / (action_max - action_min))
 
-        # 保存 scale / offset
+        # save scale / offset
         np.save(self.head_scale_path,   head_scale.astype(np.float32))
         np.save(self.head_offset_path,  head_offset.astype(np.float32))
         np.save(self.wrist_scale_path,  wrist_scale.astype(np.float32))
@@ -728,7 +728,7 @@ class RealmanExpertDataset(Dataset):
         with open(self.lang_path, "r", encoding="utf-8") as f:
             self.trajectories["language"] = json.load(f)
 
-        # 读取 scale 和 offset
+        # load scale and offset
         self.head_scale = np.load(self.head_scale_path).astype(np.float32)
         self.head_offset = np.load(self.head_offset_path).astype(np.float32)
         self.wrist_scale = np.load(self.wrist_scale_path).astype(np.float32)

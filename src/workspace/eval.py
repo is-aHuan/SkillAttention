@@ -72,7 +72,7 @@ def _get_eval_config(env_id, lorel_task):
         #     return (
         #         lambda e, d, task: BabyAIWrapper(e, d),
         #         int(self.eval_episode_factor * dataset.max_length),
-        #         [None], # 单一任务占位符
+        #         [None], # placeholder for a single task
         #         False
         #     )
             
@@ -429,4 +429,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
