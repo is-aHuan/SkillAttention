@@ -8,7 +8,7 @@ resume: False
 project_name: "SkillAttention"
 
 wandb: True
-outputs_root: "/home/lyh/data_folder/skdif_attention_outputs"
+outputs_root: "/root/skill_attention_outputs"
 hydra_base_dir: ""                      
 
 trainer:
@@ -16,7 +16,7 @@ trainer:
   eval_every: 1
   num_eval_episodes: 10
 
-  batch_size: 512
+  batch_size: 1024
   max_iters: 800
   warmup_steps: 2500
   lr_decay: 0.1

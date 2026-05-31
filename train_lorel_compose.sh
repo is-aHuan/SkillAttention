@@ -3,7 +3,7 @@ export WANDB_MODE=offline
 export CUDA_VISIBLE_DEVICES="3"
 
 RUN_ID=$(date +%Y-%m-%d-%H-%M-%S)
-OUTPUT_ROOT="/home/lyh/data_folder/skdif_tune_outputs"
+OUTPUT_ROOT="~/ska_tune_outputs"
 
 ulimit -n 65535
 python -m torch.distributed.run \
@@ -11,8 +11,8 @@ python -m torch.distributed.run \
     --master_port=29602 \
     skilldiffuser/hrl/main_hot.py \
     hydra.run.dir=${OUTPUT_ROOT}/${RUN_ID} \
-    env=lorel_realman \
-    env.action_dim=7 \
+    env=lorel_sawyer \
+    env.action_dim=5 \
     method=traj_option \
     wandb=True \
     render=False \
@@ -30,4 +30,4 @@ python -m torch.distributed.run \
     freeze_loaded_options=False \
     max_iters=30 \
     train_dataset.num_trajectories=351 \
-    train_dataset.expert_location=/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/realman.pkl \
+    train_dataset.expert_location=/mnt/tidal-sh01/dataset/liyonghuan/datasets/may_08_sawyer_50k/lorl_sawyer.pkl \

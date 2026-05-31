@@ -1,4 +1,5 @@
 from typing import Any, Dict, IO, List, Tuple, Union, Optional
+import logging
 import re
 import numpy as np
 import pandas as pd
@@ -10,6 +11,7 @@ import os
 from tqdm import tqdm
 import json
 from PIL import Image
+import gc
 
 def load_trajectories(expert_location: str,
                       num_trajectories: int = 10,
@@ -30,7 +32,7 @@ def load_trajectories(expert_location: str,
             trajs = load_babyai_data(expert_location, num_trajectories, seed, **kwargs)
             # BabyAI does the random shuffling and taking subset for us
             return trajs
-        elif 'lorel' in expert_location:
+        elif 'lorel' in expert_location or 'lorel' in str(kwargs.get('task_name', '')).lower() or 'lorel' in str(kwargs.get('name', '')).lower():
             trajs = load_lorel_data(expert_location, **kwargs)
         elif 'calvin' in expert_location:
             trajs = load_calvin_data(expert_location, num_trajectories, seed, **kwargs)
@@ -245,15 +247,26 @@ class ExpertDataset(Dataset):
 
         # Rank0 build memmap (added chunk processing)
         if writer and (force_rebuild or not self._memmap_exists()):
+            logger = logging.getLogger("main")
+            logger.info(f"Memmap cache is missing or force_rebuild=True, rebuilding at {self.memmap_dir}")
+            logger.info(f"Loading trajectories from {expert_location} ...")
             all_traj = self._load_and_subsample(
                 expert_location, num_trajectories, subsample_frequency, seed, **kwargs
             )
-            # Added: chunk trajectory splitting
-            if chunk_horizon is not None:
-                all_traj = self._chunk_trajectories(all_traj, chunk_horizon)
+            logger.info(f"Loaded {len(all_traj['actions'])} trajectories.")
+            logger.info("Inferring normalization dimensions ...")
             self._infer_normalize_dim(expert_location, all_traj, **kwargs)
+            logger.info("Computing normalization statistics before chunking ...")
             self._compute_stats(all_traj)
+            # Added: chunk trajectory splitting. Statistics can be computed before
+            # chunking because chunking only splits/reorders the same timesteps.
+            if chunk_horizon is not None:
+                logger.info(f"Chunking trajectories with horizon={chunk_horizon} ...")
+                all_traj = self._chunk_trajectories(all_traj, chunk_horizon)
+                logger.info(f"Chunked into {len(all_traj['actions'])} chunks.")
+            logger.info("Writing memmap files ...")
             self._build_memmaps(all_traj)
+            logger.info("Memmap rebuild finished.")
             del all_traj
 
         self._attach_memmaps()
@@ -278,7 +291,7 @@ class ExpertDataset(Dataset):
             "dones": [], "lengths": [], "language": []
         }
 
-        for i in range(len(trajs["proprio"])):
+        for i in tqdm(range(len(trajs["proprio"])), desc="Chunking trajectories"):
             proprio_i = trajs["proprio"][i]
             image_i   = trajs["images"][i]
             action_i = trajs["actions"][i]
@@ -301,51 +314,90 @@ class ExpertDataset(Dataset):
 
         return new_traj
 
-    # ---------- Replaced: Compute Scale/Offset ----------
+    # ---------- Replaced: Compute Scale/Offset (Streaming) ----------
     def _compute_stats(self, all_traj: Dict[str, Any], range_eps: float = 1e-4):
         """
         compute scale/offset so that x_norm = x * scale + offset maps to approx [-1, 1]
+        Uses streaming computation to avoid large intermediate arrays.
         """
-        all_proprio = np.concatenate(all_traj["proprio"], axis=0).astype(np.float32)  # (sum_T, Dp)
-        all_images  = np.concatenate(all_traj["images"], axis=0).astype(np.float32)   # (sum_T, C, H, W)
-        all_actions = np.concatenate(all_traj["actions"], axis=0).astype(np.float32)  # (sum_T, Da)
+        logger = logging.getLogger("main")
+        
+        # Initialize min/max trackers
+        p_min, p_max = None, None
+        im_min, im_max = None, None
+        a_min, a_max = None, None
+        
+        # Fast path for dense LoReL arrays before chunking:
+        # proprio/actions are (N,T,D), images are (N,T,C,H,W). This avoids
+        # iterating over 120k small chunks and avoids many tiny astype/min calls.
+        if isinstance(all_traj["proprio"], np.ndarray) and isinstance(all_traj["images"], np.ndarray):
+            logger.info("Computing statistics from dense arrays ...")
+            p = all_traj["proprio"].astype(np.float32, copy=False)
+            im = all_traj["images"].astype(np.float32, copy=False)
+            a = all_traj["actions"].astype(np.float32, copy=False)
+
+            p_min = p.min(axis=(0, 1))
+            p_max = p.max(axis=(0, 1))
+            im_min = im.min(axis=(0, 1, 3, 4))
+            im_max = im.max(axis=(0, 1, 3, 4))
+            a_min = a.min(axis=(0, 1))
+            a_max = a.max(axis=(0, 1))
+        else:
+            # Generic streaming path for list-of-trajectories data.
+            logger.info("Computing statistics (streaming)...")
+            for i in tqdm(range(len(all_traj["proprio"])), desc="Computing stats"):
+                # Proprio
+                p = all_traj["proprio"][i].astype(np.float32, copy=False)
+                if p_min is None:
+                    p_min = p.min(axis=0)
+                    p_max = p.max(axis=0)
+                else:
+                    p_min = np.minimum(p_min, p.min(axis=0))
+                    p_max = np.maximum(p_max, p.max(axis=0))
+                
+                # Images (per-channel min/max)
+                im = all_traj["images"][i].astype(np.float32, copy=False)  # (T, C, H, W)
+                im_i_min = im.min(axis=(0, 2, 3))  # (C,)
+                im_i_max = im.max(axis=(0, 2, 3))  # (C,)
+                if im_min is None:
+                    im_min = im_i_min
+                    im_max = im_i_max
+                else:
+                    im_min = np.minimum(im_min, im_i_min)
+                    im_max = np.maximum(im_max, im_i_max)
+                
+                # Actions
+                a = all_traj["actions"][i].astype(np.float32, copy=False)
+                if a_min is None:
+                    a_min = a.min(axis=0)
+                    a_max = a.max(axis=0)
+                else:
+                    a_min = np.minimum(a_min, a.min(axis=0))
+                    a_max = np.maximum(a_max, a.max(axis=0))
 
         # ----- proprio -----
-        p_min = all_proprio.min(axis=0)
-        p_max = all_proprio.max(axis=0)
         p_range = p_max - p_min
         p_safe = np.where(p_range < range_eps, 1.0, p_range)
-
         proprio_scale  = (2.0 / p_safe).astype(np.float32)
         proprio_offset = (-(p_max + p_min) / p_safe).astype(np.float32)
-
         small = (p_range < range_eps)
         proprio_scale  = np.where(small, 0.0, proprio_scale).astype(np.float32)
         proprio_offset = np.where(small, 0.0, proprio_offset).astype(np.float32)
 
-        # ----- images: per-channel -----
-        # (T,C,H,W) -> keep C
-        im_min = all_images.min(axis=(0, 2, 3))
-        im_max = all_images.max(axis=(0, 2, 3))
+        # ----- images -----
         im_range = im_max - im_min
         im_safe = np.where(im_range < range_eps, 1.0, im_range)
-
-        image_scale  = (2.0 / im_safe).astype(np.float32)             # (C,)
+        image_scale  = (2.0 / im_safe).astype(np.float32)
         image_offset = (-(im_max + im_min) / im_safe).astype(np.float32)
-
         small_im = (im_range < range_eps)
         image_scale  = np.where(small_im, 0.0, image_scale).astype(np.float32)
         image_offset = np.where(small_im, 0.0, image_offset).astype(np.float32)
 
         # ----- actions -----
-        a_min = all_actions.min(axis=0)
-        a_max = all_actions.max(axis=0)
         a_range = a_max - a_min
         a_safe = np.where(a_range < range_eps, 1.0, a_range)
-
         action_scale  = (2.0 / a_safe).astype(np.float32)
         action_offset = (-(a_max + a_min) / a_safe).astype(np.float32)
-
         small_a = (a_range < range_eps)
         action_scale  = np.where(small_a, 0.0, action_scale).astype(np.float32)
         action_offset = np.where(small_a, 0.0, action_offset).astype(np.float32)
@@ -375,10 +427,16 @@ class ExpertDataset(Dataset):
 
     def _infer_normalize_dim(self, expert_location: str, all_traj: Dict[str, Any], **kwargs):
         """ self.normalize_state_dim """
-        if 'babyai' in expert_location and kwargs.get("use_direction", False):
-            self.normalize_state_dim = all_traj["states"][0].shape[-1] - 4
-        elif 'lorel' in expert_location:
+        # Check if this is LoReL data (by expert_location or task_name/name)
+        is_lorel = ('lorel' in expert_location or
+                    'lorel' in str(kwargs.get('task_name', '')).lower() or
+                    'lorel' in str(kwargs.get('name', '')).lower())
+        
+        if is_lorel:
+            # LoReL data uses proprio as state
             self.normalize_proprio_dim = int(np.array(all_traj["proprio"][0]).shape[-1])
+        elif 'babyai' in expert_location and kwargs.get("use_direction", False):
+            self.normalize_state_dim = all_traj["states"][0].shape[-1] - 4
         elif 'calvin' in expert_location:
             self.normalize_state_dim = all_traj["states"][0].shape[1:]
         else:
@@ -396,26 +454,66 @@ class ExpertDataset(Dataset):
         return all(os.path.exists(p) for p in paths)
 
     def _build_memmaps(self, all_traj: Dict[str, Any]):
-        """rank: Write in-memory list data to disk memmap and save metadata and statistics."""
+        """rank: Write in-memory list data to disk memmap and save metadata and statistics.
+        Uses chunked writing to avoid large intermediate arrays and reduce memory pressure.
+        """
         lengths = np.array(all_traj["lengths"], dtype=np.int64)
         total_T = int(np.sum(lengths))
 
-        proprio_np = np.concatenate(all_traj["proprio"], axis=0).astype(np.float32)
-        images_np  = np.concatenate(all_traj["images"], axis=0).astype(np.float32)
-        actions_np = np.concatenate(all_traj["actions"], axis=0).astype(np.float32)
-        actions_np =np.concatenate(all_traj["actions"], axis=0).astype(np.float32)
-        rewards_np = np.concatenate(all_traj["rewards"], axis=0).astype(np.float32)
-        dones_np = np.concatenate(all_traj["dones"], axis=0).astype(np.uint8)
+        logger = logging.getLogger("main")
+        
+        # Infer shapes from first element (no full concatenate yet)
+        proprio_tail = tuple(all_traj["proprio"][0].shape[1:])   # (Dp,)
+        image_tail   = tuple(all_traj["images"][0].shape[1:])    # (C,H,W)
+        action_tail  = tuple(all_traj["actions"][0].shape[1:])   # (Da,)
+        
+        # Write files sequentially with normal buffered IO. This avoids slow mmap
+        # dirty-page writeback during cache construction; later _attach_memmaps()
+        # still reads these files through np.memmap with the same format.
+        image_item_bytes = int(np.prod(image_tail)) * np.dtype(np.float32).itemsize
+        target_batch_bytes = int(self.kwargs.get("memmap_write_batch_mb", 2048)) * 1024 * 1024
+        batch_T = max(1, target_batch_bytes // max(1, image_item_bytes))
+        logger.info(
+            f"Writing raw memmap backing files with sequential IO: target_batch={target_batch_bytes / 1024 / 1024:.0f}MB, "
+            f"batch_T≈{batch_T} timesteps"
+        )
 
-        proprio_tail = tuple(proprio_np.shape[1:])   # (Dp,)
-        image_tail   = tuple(images_np.shape[1:])    # (C,H,W)
-        action_tail  = tuple(actions_np.shape[1:])   # (Da,)
+        n = len(all_traj["proprio"])
+        pbar = tqdm(total=total_T, desc="Writing memmap backing files", unit="step")
+        start_i = 0
+        with open(self.proprio_path, "wb") as f_proprio, \
+             open(self.images_path, "wb") as f_images, \
+             open(self.actions_path, "wb") as f_actions, \
+             open(self.rewards_path, "wb") as f_rewards, \
+             open(self.dones_path, "wb") as f_dones:
+            while start_i < n:
+                end_i = start_i
+                cur_T = 0
+                while end_i < n and (cur_T == 0 or cur_T + int(lengths[end_i]) <= batch_T):
+                    cur_T += int(lengths[end_i])
+                    end_i += 1
 
-        self._write_memmap(self.proprio_path, proprio_np)
-        self._write_memmap(self.images_path, images_np)
-        self._write_memmap(self.actions_path, actions_np)
-        self._write_memmap(self.rewards_path, rewards_np)
-        self._write_memmap(self.dones_path, dones_np)
+                np.ascontiguousarray(
+                    np.concatenate(all_traj["proprio"][start_i:end_i], axis=0), dtype=np.float32
+                ).tofile(f_proprio)
+                np.ascontiguousarray(
+                    np.concatenate(all_traj["images"][start_i:end_i], axis=0), dtype=np.float32
+                ).tofile(f_images)
+                np.ascontiguousarray(
+                    np.concatenate(all_traj["actions"][start_i:end_i], axis=0), dtype=np.float32
+                ).tofile(f_actions)
+                np.ascontiguousarray(
+                    np.concatenate(all_traj["rewards"][start_i:end_i], axis=0), dtype=np.float32
+                ).tofile(f_rewards)
+                np.ascontiguousarray(
+                    np.concatenate(all_traj["dones"][start_i:end_i], axis=0), dtype=np.uint8
+                ).tofile(f_dones)
+
+                pbar.update(cur_T)
+                start_i = end_i
+                gc.collect()
+
+        pbar.close()
 
         np.save(self.lengths_path, lengths)
         with open(self.lang_path, "w", encoding="utf-8") as f:
@@ -476,11 +574,6 @@ class ExpertDataset(Dataset):
         self.image_offset   = np.load(self.image_offset_path).astype(np.float32)
         self.action_scale   = np.load(self.action_scale_path).astype(np.float32)
         self.action_offset  = np.load(self.action_offset_path).astype(np.float32)
-
-    def _write_memmap(self, path: str, arr: np.ndarray):
-        mm = np.memmap(path, mode="w+", dtype=arr.dtype, shape=arr.shape)
-        mm[:] = arr
-        del mm  # flush
 
     def _np_slice_to_torch(self, x):
         """

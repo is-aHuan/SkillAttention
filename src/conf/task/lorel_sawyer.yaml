@@ -1,8 +1,8 @@
 # conf/task/realman_pick_cube.yaml
 name: lorel_sawyer
 
-expert_location: "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/prep_data.pkl"
-memmap_dir: "/home/lyh/data_folder/dataspace/lorel/may_08_sawyer_50k/memmap_cache_lorel"
+expert_location: "/mnt/tidal-sh01/dataset/liyonghuan/datasets/may_08_sawyer_50k/prep_data.pkl"
+memmap_dir: "/mnt/tidal-sh01/dataset/liyonghuan/datasets/may_08_sawyer_50k/memmap_cache_lorel"
 num_trajectories: 40108
 
 # "all": use all tasks, otherwise use specific task

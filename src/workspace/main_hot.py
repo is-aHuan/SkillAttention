@@ -32,6 +32,7 @@ import random
 import builtins  # ✅ for monkey-patching print
 
 from pathlib import Path
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from trainer import Trainer
 
@@ -569,3 +570,48 @@ def train(args: DictConfig):
 
         if args.wandb and global_rank == 0 and iter_num % args.trainer.log_interval == 0:
             wandb.log(outputs, step=iter_num)
+
+
+def resolve_run_dir(resume, checkpoint_path, outputs_root, task_lang, date, time):
+    """Resolve Hydra output directory; reuse checkpoint parent directory when resuming."""
+    resume_flag = str(resume).lower() in ("1", "true", "yes")
+    if resume_flag and checkpoint_path:
+        return os.path.abspath(os.path.join(os.path.dirname(checkpoint_path), ".."))
+    return os.path.join(outputs_root, task_lang, date, time)
+
+
+OmegaConf.register_new_resolver("resolve_run_dir", resolve_run_dir, replace=True)
+
+
+@hydra.main(version_base=None, config_path="../conf", config_name="train_lorel_sawyer")
+def main(cfg: DictConfig):
+    setup_rank0_print()
+
+    if "LOCAL_RANK" in os.environ and torch.cuda.is_available():
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend)
+
+    try:
+        cfg = get_args(cfg)
+        cfg.hydra_base_dir = HydraConfig.get().runtime.output_dir
+        os.makedirs(cfg.hydra_base_dir, exist_ok=True)
+
+        log_file = os.path.join(cfg.hydra_base_dir, "train.log")
+        logger = create_global_logger(log_file=log_file)
+        _disable_file_logging_for_non_rank0()
+
+        if is_main_process():
+            logger.info(f"Hydra output dir: {cfg.hydra_base_dir}")
+            logger.info(OmegaConf.to_yaml(cfg))
+
+        train(cfg)
+    finally:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
