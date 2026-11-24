@@ -1,5 +1,5 @@
 outputs
-.vscode
+.vscode/
 
 # Python cache
 __pycache__/
