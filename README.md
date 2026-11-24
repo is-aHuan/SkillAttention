@@ -11,7 +11,7 @@ This repository contains the implementation of:
 ## Overview of SkillAttention
 
 <p align="center">
-  <img src="assets/framework.jpg" width="75%">
+  <img src="assets/framework.png" width="100%">
 </p>
 
 ## Installation
